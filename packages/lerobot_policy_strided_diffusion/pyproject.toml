@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_policy_strided_diffusion"
+version = "0.1.0"
+description = "LeRobot third-party policy plugin: DiffusionPolicy with uniform-stride observation history."
+requires-python = ">=3.10"
+# lerobot is assumed to be installed separately (editable) in the same env;
+# we deliberately don't declare it here to avoid pulling a PyPI version over it.
+dependencies = []
+
+[project.entry-points."lerobot.policies"]
+strided_diffusion = "lerobot_policy_strided_diffusion.configuration_strided_diffusion:StridedDiffusionConfig"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-ros2"
+version = "0.1.0"
+description = "Recording, deploy, export and visualization utilities for UR3e bimanual teleoperation on top of huggingface/lerobot."
+requires-python = ">=3.10"
+readme = "README.md"
+# ``lerobot`` (huggingface/lerobot) is deliberately NOT declared here: it is
+# installed separately (editable, from a pinned commit) in the Docker image
+# and we don't want pip to pull a PyPI version over the top of it.
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "pyyaml",
+    "torch",
+    "torchvision",
+    "pillow",
+    "matplotlib",
+    "pandas",
+    "av",
+    "gradio",
+    "pytz",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+pedal = ["evdev"]
+
+[project.scripts]
+lerobot-ros-record = "lerobot_ros2.cli.record:main"
+lerobot-ros-deploy = "lerobot_ros2.cli.deploy:main"
+lerobot-ros-export = "lerobot_ros2.cli.export:main"
+lerobot-ros-probe-cameras = "lerobot_ros2.cli.probe_cameras:main"
+lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
+lerobot-ros-app = "lerobot_ros2.cli.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

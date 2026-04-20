@@ -1,0 +1,142 @@
+# ROS 2 topic configuration for Lerobot recording
+# These must match the topics from ur_robotiq launch
+
+arms:
+  left:
+    action_topic: "/left_arm_controller/commands"
+    state_topic: "/left_state_broadcaster/joint_states"
+  right:
+    action_topic: "/right_arm_controller/commands"
+    state_topic: "/right_state_broadcaster/joint_states"
+
+services:
+  control_mode:
+    - "/left_gello_offset_node/set_parameters"
+    - "/right_gello_offset_node/set_parameters"
+  # Optional empty services that return only once Gello has resumed publishing
+  # after a mode transition has been requested.
+  # If omitted, record.py derives them from control_mode by replacing
+  # "/set_parameters" with "/transition_ready".
+  transition_ready:
+    - "/left_gello_offset_node/wait_for_mode_transition"
+    - "/right_gello_offset_node/wait_for_mode_transition"
+
+use_reset_client: false
+
+# Joints whose raw /joint_states readings may drift by multiples of 2π across
+# episodes (UR3e wrist_3 is the canonical case — see bimanual_controllers.yaml,
+# where it has angle_wraparound: true). Each listed suffix is matched against
+# the tail of every joint name returned by the state broadcaster, so the same
+# entry covers "left_wrist_3_joint" and "right_wrist_3_joint" automatically.
+#
+# At recording time, the first state frame of each episode defines an offset
+# (q0 - wrap_pi(q0)) that is a multiple of 2π, and both the state and action
+# columns of the matching joints have that offset subtracted for every frame
+# of the episode. This keeps the dataset inside a small, revolution-free band
+# near zero without changing feature dimensions. Deploy is not affected — the
+# operator is responsible for parking wrist_3 within [-π, π] before replay.
+# Pass an empty list ([]) to disable the feature entirely.
+wrap_joints:
+  - wrist_3_joint
+
+# After RobotHomeSender publishes the home JointState, it reads the current
+# joint angles and walks any wrap-joint (see `wrap_joints` above) whose
+# reading differs from its home target by more than `max_step` back to home
+# in fixed chunks — one JointState waypoint per `waypoint_stamp_s` seconds,
+# each shifted by up to `max_step` radians toward the target. Non-wrap
+# joints stay pinned at the home values during the unroll, so only the
+# wrist keeps moving. Omit this section to use the defaults below.
+unwrap:
+  max_step: 1.5708       # ~π/2 radians per waypoint (≈ 4 waypoints per full turn)
+  waypoint_stamp_s: 1.0  # JointState duration between waypoints
+
+recording:
+  hz: 10
+  # When true, each camera can undo sudden 180° firmware flips by comparing to the previous frame
+  # (see orientation_stabilize_180_vs_prev in scripts/helper.py). Override per camera under left_cameras / etc.
+  stabilize_orientation_180: true
+  orientation_mae_delta_threshold: 20.0
+
+visualization:
+  camera_grid_columns: 2
+
+# Default camera resolution used when a camera entry does not override it.
+# Format is [height, width].
+# camera_resolution: [480, 640] # ACT standard
+
+# Camera v4l2 controls applied at open time by CameraReader. Anything in
+# `camera_defaults.settings` is applied to every camera; per-camera `settings:`
+# blocks below override individual keys (e.g. focus_absolute on the wrists).
+# After applying, each value is read back and a CameraSettingsMismatch is
+# raised if the camera silently rejected it. This is the "flag it" guarantee
+# so recording and deployment never run on auto-drifting cameras.
+
+# probe cameras -- python scripts/probe_cameras.py
+#
+# Notes on dependency ordering (handled automatically in apply_v4l2_settings):
+#   - auto_exposure must be set BEFORE exposure_time_absolute
+#   - white_balance_automatic must be set BEFORE white_balance_temperature
+#   - focus_automatic_continuous must be set BEFORE focus_absolute
+#
+# Common menu/bool values for the cameras probed here (verify in
+# config/camera_probes/<name>.yaml if you swap hardware):
+#   auto_exposure:           0=Auto Mode, 1=Manual Mode, 3=Aperture Priority
+#   power_line_frequency:    0=Disabled, 1=50 Hz, 2=60 Hz
+#   white_balance_automatic: 0=off (manual), 1=on
+#   focus_automatic_continuous: 0=off (manual), 1=on
+camera_defaults:
+  settings:
+    auto_exposure: 1
+    white_balance_automatic: 0
+    focus_automatic_continuous: 0
+    backlight_compensation: 0
+    exposure_time_absolute: 100
+    white_balance_temperature: 4000
+    power_line_frequency: 1
+    gain: 1
+    brightness: 50
+    contrast: 50
+    saturation: 50
+    sharpness: 50
+    hue: 50
+    # Pan/tilt/zoom pinned to 0 so firmware-level gesture tracking or
+    # auto-framing has nothing to act on at the v4l2 layer. The AI inside
+    # the camera may still be running, but the framing cannot physically
+    # or digitally move while these are held at 0.
+    pan_absolute: 0
+    tilt_absolute: 0
+    zoom_absolute: 0
+    pan_speed: 0
+    tilt_speed: 0
+
+# Left/right recordings include the matching arm cameras plus all cameras in
+# `other_cameras`. Full bimanual recordings include all three sections.
+left_cameras:
+  left_wrist_top:
+    port: /dev/video4
+    settings:
+      focus_absolute: 100
+  # left_wrist_bottom:
+  #   port: /dev/video12
+
+right_cameras:
+  right_wrist_top:
+    port: /dev/video6
+    settings:
+      focus_absolute: 100
+  # right_wrist_bottom:
+  #   port: /dev/video12
+
+other_cameras:
+  perspective:
+    port: /dev/video0
+    settings:
+      focus_absolute: 20
+  front:
+    port: /dev/video2
+    settings:
+      focus_absolute: 20
+  back:
+    port: /dev/video8
+    settings:
+      focus_absolute: 20
