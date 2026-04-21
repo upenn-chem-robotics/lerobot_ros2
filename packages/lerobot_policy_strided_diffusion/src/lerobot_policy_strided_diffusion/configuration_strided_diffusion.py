@@ -23,14 +23,25 @@ from dataclasses import dataclass
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 
+import os
+
 
 @PreTrainedConfig.register_subclass("strided_diffusion")
 @dataclass
 class StridedDiffusionConfig(DiffusionConfig):
-    stride_seconds: float = 1.0
-    fps: int = 30
 
     def __post_init__(self) -> None:
+        self.fps = os.getenv("DATASET_FPS")
+        if self.fps is None:
+            raise ValueError("DATASET_FPS environment variable must be set to the training dataset's fps with strided_diffusion.")
+        self.fps = int(self.fps)
+
+        self.stride_seconds = os.getenv("STRIDE_SECONDS")
+        if self.stride_seconds is None:
+            raise ValueError("STRIDE_SECONDS environment variable must be set to the desired stride in seconds with strided_diffusion.")
+        self.stride_seconds = float(self.stride_seconds)
+
+        print(f"Initialized StridedDiffusionConfig with fps={self.fps}, stride_seconds={self.stride_seconds} -> stride_frames={self.stride_frames}")
         super().__post_init__()
         frames = self.stride_seconds * self.fps
         if abs(round(frames) - frames) > 1e-6:
