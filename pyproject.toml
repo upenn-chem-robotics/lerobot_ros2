@@ -32,6 +32,7 @@ pedal = ["evdev"]
 [project.scripts]
 lerobot-ros-record = "lerobot_ros2.cli.record:main"
 lerobot-ros-deploy = "lerobot_ros2.cli.deploy:main"
+lerobot-ros-dagger = "lerobot_ros2.cli.dagger:main"
 lerobot-ros-export = "lerobot_ros2.cli.export:main"
 lerobot-ros-probe-cameras = "lerobot_ros2.cli.probe_cameras:main"
 lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
