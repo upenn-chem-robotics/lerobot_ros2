@@ -1021,11 +1021,21 @@ def main() -> None:
     unwrap_opts = resolve_unwrap_config(cfg)
 
     def _home_state_source(arm_name: str) -> Optional[np.ndarray]:
-        listener = listeners.get(arm_name)
-        if listener is None:
+        # Must return LIVE state, not the first snapshot: RobotHomeSender now
+        # polls this per waypoint to confirm the wrist settled before sending
+        # the next target, so a stale initial reading would deadlock the
+        # settle-check until the timeout fires.
+        arm_state = arm_states.get(arm_name)
+        if arm_state is None:
             return None
-        _, positions = listener.initial_state()
-        return np.asarray(positions, dtype=np.float64) if positions else None
+        _, state_qpos, _ = arm_state.snapshot()
+        if state_qpos is None:
+            listener = listeners.get(arm_name)
+            if listener is None:
+                return None
+            _, positions = listener.initial_state()
+            return np.asarray(positions, dtype=np.float64) if positions else None
+        return np.asarray(state_qpos, dtype=np.float64)
 
     home_sender = RobotHomeSender(
         node,
@@ -1034,6 +1044,8 @@ def main() -> None:
         wrap_joint_suffixes=wrap_joint_suffixes,
         unwrap_max_step=unwrap_opts["max_step"],
         unwrap_waypoint_stamp_s=unwrap_opts["waypoint_stamp_s"],
+        unwrap_settle_tolerance=unwrap_opts["settle_tolerance"],
+        unwrap_settle_timeout_s=unwrap_opts["settle_timeout_s"],
     )
 
     reset_return_service = None

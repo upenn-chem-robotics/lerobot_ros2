@@ -590,6 +590,8 @@ def main() -> None:
         wrap_joint_suffixes=wrap_joint_suffixes,
         unwrap_max_step=unwrap_opts["max_step"],
         unwrap_waypoint_stamp_s=unwrap_opts["waypoint_stamp_s"],
+        unwrap_settle_tolerance=unwrap_opts["settle_tolerance"],
+        unwrap_settle_timeout_s=unwrap_opts["settle_timeout_s"],
     )
 
     # Publishers for arm actions
@@ -672,6 +674,18 @@ def main() -> None:
         logging.info("REPLAY — homing, then restarting policy")
         home_sender.send_home(home_positions, arm_joint_names)
         episode_count += 1
+        # Seed wrap-joint offsets from the home pose we just commanded, not
+        # from a live state snapshot. The ROS state subscriber runs in a
+        # background thread and the most recent cached sample at this point
+        # can race the post-homing update; if it's still the pre-homing
+        # wrap (e.g. wrist_3 at ±2π), `_latch_offset` would pick up that
+        # value and the very first `add_action` would send the arm back
+        # to the wrapped pose. Pre-latching from `home_positions` removes
+        # the race entirely.
+        for arm_name in arm_keys:
+            home_arr = home_positions.get(arm_name) or []
+            if home_arr:
+                wrap_manager.prelatch_offset(arm_name, home_arr, episode_count)
         running_event.set()
         logging.info(f"REPLAY — policy running (episode {episode_count})")
 

@@ -853,6 +853,8 @@ class RobotHomeSender:
         wrap_joint_suffixes: Sequence[str] = (),
         unwrap_max_step: float = math.pi / 2,
         unwrap_waypoint_stamp_s: float = 1.0,
+        unwrap_settle_tolerance: float = 0.05,
+        unwrap_settle_timeout_s: Optional[float] = None,
     ) -> None:
         self._node = node
         self._arm_configs = arm_configs
@@ -864,6 +866,12 @@ class RobotHomeSender:
         self._wrap_joint_suffixes = tuple(wrap_joint_suffixes or ())
         self._unwrap_max_step = float(unwrap_max_step)
         self._unwrap_waypoint_stamp_s = float(unwrap_waypoint_stamp_s)
+        self._unwrap_settle_tolerance = float(unwrap_settle_tolerance)
+        self._unwrap_settle_timeout_s = (
+            float(unwrap_settle_timeout_s)
+            if unwrap_settle_timeout_s is not None
+            else max(2.0 * self._unwrap_waypoint_stamp_s, 2.0)
+        )
 
     def send_home(
         self,
@@ -952,7 +960,65 @@ class RobotHomeSender:
             msg.name = list(joint_names)
             msg.position = [float(v) for v in waypoint]
             self._publishers[arm_name].publish(msg)
-            time.sleep(self._unwrap_waypoint_stamp_s)
+            # Block until the wrap joints actually reach this waypoint before
+            # publishing the next one. If we race ahead (old behaviour: plain
+            # time.sleep), the trajectory controller sees a fresh absolute
+            # target while still mid-motion and can interpolate the "short
+            # way round", re-wrapping the wrist we just tried to unroll.
+            self._wait_for_waypoint_settled(
+                arm_name=arm_name,
+                wrap_indices=valid_indices,
+                waypoint=np.asarray(waypoint, dtype=np.float64),
+                step_idx=step_idx,
+                num_steps=num_steps,
+                joint_names=joint_names,
+            )
+
+    def _wait_for_waypoint_settled(
+        self,
+        arm_name: str,
+        wrap_indices: List[int],
+        waypoint: np.ndarray,
+        step_idx: int,
+        num_steps: int,
+        joint_names: List[str],
+    ) -> None:
+        """Poll ``state_source`` until the wrap joints are within tolerance of ``waypoint``.
+
+        Falls back to a fixed ``unwrap_waypoint_stamp_s`` sleep if no state
+        source is wired up. Times out after ``unwrap_settle_timeout_s`` and
+        logs a warning so a stuck arm can't deadlock the homing sequence.
+        """
+        nominal = max(self._unwrap_waypoint_stamp_s, 1e-3)
+        if self._state_source is None:
+            time.sleep(nominal)
+            return
+
+        poll_interval = max(0.02, min(0.1, nominal * 0.1))
+        deadline = time.monotonic() + self._unwrap_settle_timeout_s
+        last_err: Optional[float] = None
+        while time.monotonic() < deadline:
+            current = self._state_source(arm_name)
+            if current is not None:
+                current_arr = np.asarray(current, dtype=np.float64)
+                if wrap_indices and max(wrap_indices) < current_arr.shape[0]:
+                    errors = np.abs(current_arr[wrap_indices] - waypoint[wrap_indices])
+                    last_err = float(np.max(errors))
+                    if last_err <= self._unwrap_settle_tolerance:
+                        return
+            time.sleep(poll_interval)
+
+        logging.warning(
+            "[%s] wrap-joint waypoint %d/%d did not settle within %.2fs "
+            "(max_err=%s rad, tol=%.3f); proceeding — check %s tracking",
+            arm_name,
+            step_idx,
+            num_steps,
+            self._unwrap_settle_timeout_s,
+            f"{last_err:.3f}" if last_err is not None else "unknown",
+            self._unwrap_settle_tolerance,
+            [joint_names[i] for i in wrap_indices],
+        )
 
 def load_experiment_home_config(experiment_path: Path) -> Optional[dict]:
     if not experiment_path.exists():
@@ -1148,25 +1214,41 @@ class FootPedalThread(threading.Thread):
 # ── Shared record/deploy helpers ──────────────────────────────────────────
 
 
-def resolve_unwrap_config(cfg: dict) -> Dict[str, float]:
+def resolve_unwrap_config(cfg: dict) -> Dict[str, Optional[float]]:
     """Parse the optional ``unwrap:`` section of gello.yaml.
 
-    Returns a dict with ``max_step`` (radians, default π/2) and
-    ``waypoint_stamp_s`` (seconds per waypoint, default 1.0). Unknown keys are
-    ignored; missing section yields defaults so ``RobotHomeSender`` can be
+    Returns a dict with ``max_step`` (radians per unwrap waypoint, default
+    π/2), ``waypoint_stamp_s`` (trajectory deadline per waypoint, default
+    1.0s), ``settle_tolerance`` (radians of wrap-joint error we consider
+    "arrived" before publishing the next waypoint, default 0.05 ≈ 3°) and
+    ``settle_timeout_s`` (hard cap before we warn and move on; ``None``
+    means ``max(2 × waypoint_stamp_s, 2.0)``). Unknown keys are ignored;
+    missing section yields defaults so ``RobotHomeSender`` can be
     constructed uniformly.
     """
-    defaults = {"max_step": math.pi / 2, "waypoint_stamp_s": 1.0}
+    defaults = {
+        "max_step": math.pi / 2,
+        "waypoint_stamp_s": 1.0,
+        "settle_tolerance": 0.05,
+        "settle_timeout_s": None,
+    }
     raw = cfg.get("unwrap") if isinstance(cfg, dict) else None
     if raw is None:
         return defaults
     if not isinstance(raw, dict):
-        raise ValueError("`unwrap:` must be a mapping with max_step / waypoint_stamp_s")
+        raise ValueError(
+            "`unwrap:` must be a mapping with max_step / waypoint_stamp_s / "
+            "settle_tolerance / settle_timeout_s"
+        )
     out = dict(defaults)
     if "max_step" in raw:
         out["max_step"] = float(raw["max_step"])
     if "waypoint_stamp_s" in raw:
         out["waypoint_stamp_s"] = float(raw["waypoint_stamp_s"])
+    if "settle_tolerance" in raw:
+        out["settle_tolerance"] = float(raw["settle_tolerance"])
+    if "settle_timeout_s" in raw and raw["settle_timeout_s"] is not None:
+        out["settle_timeout_s"] = float(raw["settle_timeout_s"])
     return out
 
 
@@ -1241,6 +1323,47 @@ class WrapJointManager:
         else:
             self._offsets.pop(arm, None)
             self._out_of_band_logged.pop(arm, None)
+
+    def prelatch_offset(
+        self,
+        arm: str,
+        reference_positions: Sequence[float] | np.ndarray,
+        episode_idx: int = 0,
+    ) -> Optional[np.ndarray]:
+        """Seed the per-episode 2π offset from a known reference vector.
+
+        Typical use: immediately after homing (``RobotHomeSender.send_home``),
+        pass in ``home_positions[arm]`` so the offset is derived from the
+        pose the controller was explicitly commanded to reach, rather than
+        from the first live state sample. Without this, a single stale
+        pre-homing state read racing the ROS subscriber callback can cause
+        ``_latch_offset`` to latch an offset of ±2π, and the very next
+        ``add_action`` will then re-wrap the joint back to its pre-home
+        position — the "home → unwrap → jump back to wrap" symptom.
+
+        Later ``subtract_state`` / ``subtract_state_action`` calls see the
+        offset is already set and reuse it verbatim, so this is safe to
+        call even when the arm has no wrap joints (no-op).
+        """
+        indices = self._indices.get(arm) or []
+        if not indices:
+            return None
+        ref_arr = np.asarray(reference_positions, dtype=np.float64)
+        if ref_arr.size == 0 or max(indices) >= ref_arr.size:
+            return None
+        q0 = ref_arr[indices]
+        latched = (q0 - wrap_pi(q0)).astype(np.float32)
+        self._offsets[arm] = latched
+        self._out_of_band_logged.pop(arm, None)
+        if np.any(np.abs(latched) > 1e-6):
+            logging.info(
+                "[%s] wrap_joints offset pre-latched from home for episode %d: %s rad (indices %s)",
+                arm,
+                episode_idx,
+                latched.tolist(),
+                indices,
+            )
+        return latched
 
     def _latch_offset(self, arm: str, state: np.ndarray, episode_idx: int) -> Optional[np.ndarray]:
         indices = self._indices.get(arm) or []
