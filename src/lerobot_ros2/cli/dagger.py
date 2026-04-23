@@ -10,12 +10,17 @@ to collect RaC/IWR-style human-correction episodes:
    to the arm action topic. Nothing is written to disk yet; observations and
    the commanded policy action flow into a rolling pre-intervention buffer
    sized to cover Diffusion Policy's ``n_obs_steps × stride`` history window.
-2. Pedal 1 (2nd press) — human takeover. Policy publisher is silenced;
-   GELLO ``control_mode`` transitions IDLE -> NORMAL; once GELLO resumes
-   publishing (``/transition_ready``), the pre-intervention buffer is flushed
-   into the episode (tagged ``action_source = 0``) and live GELLO frames are
-   appended from here on (tagged ``action_source = 1``).
-3. Pedal 1 (3rd press) — end episode. ``dataset.save_episode()`` persists the
+2. Pedal 1 (2nd press) — freeze. The policy publisher is silenced, inference
+   stops, and the prebuffer stops accepting new frames. GELLO is still IDLE so
+   the robot holds its last commanded pose. This gives the operator idle time
+   to position themselves for handover without polluting the saved episode
+   with "frozen" states.
+3. Pedal 1 (3rd press) — human takeover. GELLO ``control_mode`` transitions
+   IDLE -> NORMAL; once GELLO resumes publishing (``/transition_ready``), the
+   pre-intervention buffer (captured during step 1 only) is flushed into the
+   episode (tagged ``action_source = 0``) and live GELLO frames are appended
+   from here on (tagged ``action_source = 1``).
+4. Pedal 1 (4th press) — end episode. ``dataset.save_episode()`` persists the
    pre-buffer + correction; GELLO goes IDLE again. The robot holds its last
    pose until the operator presses the middle pedal to home/reset, then the
    cycle repeats.
@@ -25,7 +30,7 @@ when idle (same semantics as ``record.py``).
 Pedal 3 (right, KEY_C) — cycle GELLO rotate mode (NORMAL → CW → CCW).
 
 Controls (keyboard):
-    s — cycle phase (IDLE → POLICY_ROLLOUT → TELEOP_CORRECTION → save → IDLE)
+    s — cycle phase (IDLE → POLICY_ROLLOUT → FROZEN → TELEOP_CORRECTION → save → IDLE)
     d — discard / reset (discard while recording, reset while idle)
     r — reset while idle
     m — cycle GELLO mode (NORMAL → CW → CCW)
@@ -127,6 +132,7 @@ from lerobot_ros2.cli.deploy import (
 try:
     import rclpy
     from rclpy.node import Node
+    from sensor_msgs.msg import JointState as JointStateMsg
     from std_srvs.srv import Trigger as TriggerSrv
     ROS_AVAILABLE = True
 except ImportError:
@@ -154,8 +160,9 @@ ACTION_SOURCE_HUMAN = 1
 class Phase(IntEnum):
     IDLE = 0
     POLICY_ROLLOUT = 1
-    TELEOP_CORRECTION = 2
-    SAVING = 3
+    FROZEN = 2
+    TELEOP_CORRECTION = 3
+    SAVING = 4
 
 
 class DaggerState:
@@ -191,6 +198,10 @@ class DaggerState:
         return self.phase == Phase.POLICY_ROLLOUT
 
     @property
+    def is_frozen(self) -> bool:
+        return self.phase == Phase.FROZEN
+
+    @property
     def is_teleop(self) -> bool:
         return self.phase == Phase.TELEOP_CORRECTION
 
@@ -204,9 +215,13 @@ class DaggerState:
 
     @property
     def is_recording(self) -> bool:
-        """True whenever an episode is in-progress (policy or teleop phase)."""
+        """True whenever an episode is in-progress (policy, frozen, or teleop phase)."""
         with self._lock:
-            return self._phase in (Phase.POLICY_ROLLOUT, Phase.TELEOP_CORRECTION)
+            return self._phase in (
+                Phase.POLICY_ROLLOUT,
+                Phase.FROZEN,
+                Phase.TELEOP_CORRECTION,
+            )
 
     @property
     def is_resetting(self) -> bool:
@@ -240,9 +255,26 @@ class DaggerState:
         logging.info("[%s] ▶ POLICY ROLLOUT started — episode %d", label, self.episode_idx)
         return True
 
-    def begin_teleop(self, label: str = "") -> bool:
+    def begin_frozen(self, label: str = "") -> bool:
+        """Pedal 1 press 2: silence the publisher and freeze the scene.
+
+        The robot holds its last commanded pose (no GELLO, no policy publish,
+        no prebuffer pushes). Caller is responsible for leaving GELLO in IDLE.
+        """
         with self._lock:
             if self._phase != Phase.POLICY_ROLLOUT:
+                logging.warning("[%s] Cannot freeze: phase=%s", label, self._phase.name)
+                return False
+            if not self._check_debounce():
+                return False
+            self._phase = Phase.FROZEN
+        self.policy_publish_enabled.clear()
+        logging.info("[%s] ❄ FROZEN — episode %d (pedal 1 → handover)", label, self.episode_idx)
+        return True
+
+    def begin_teleop(self, label: str = "") -> bool:
+        with self._lock:
+            if self._phase != Phase.FROZEN:
                 logging.warning("[%s] Cannot take over: phase=%s", label, self._phase.name)
                 return False
             if not self._check_debounce():
@@ -254,7 +286,11 @@ class DaggerState:
 
     def end_episode(self, label: str = "", save: bool = True) -> bool:
         with self._lock:
-            if self._phase not in (Phase.POLICY_ROLLOUT, Phase.TELEOP_CORRECTION):
+            if self._phase not in (
+                Phase.POLICY_ROLLOUT,
+                Phase.FROZEN,
+                Phase.TELEOP_CORRECTION,
+            ):
                 logging.warning("[%s] Cannot end episode: phase=%s", label, self._phase.name)
                 return False
             if not self._check_debounce():
@@ -423,7 +459,6 @@ def build_features(
 
 
 def parse_args() -> argparse.Namespace:
-    cfg = load_config()
     parser = argparse.ArgumentParser(
         description="Record DAgger correction episodes (policy rollout + human teleop)."
     )
@@ -444,8 +479,9 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--left", action="store_true", help="Left arm only.")
     group.add_argument("--right", action="store_true", help="Right arm only.")
     parser.add_argument("--hz", type=float,
-                        default=cfg.get("recording", {}).get("hz", 10.0),
-                        help="Recording/inference frequency in Hz.")
+                        default=None,
+                        help="Recording/inference frequency in Hz. "
+                             "Defaults to recording.hz from --config.")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Torch device (default: cuda).")
     parser.add_argument(
@@ -530,6 +566,12 @@ def main() -> None:
     # ── Config resolution (cameras + arms) ──────────────────────────────
     config_path = resolve_config_path(args.config)
     cfg = load_config(config_path)
+
+    # --hz defaults to recording.hz from the config when not supplied on CLI.
+    # Done here (rather than inside parse_args) because parse_args runs before
+    # --config has been resolved.
+    if args.hz is None:
+        args.hz = float(cfg.get("recording", {}).get("hz", 10.0))
 
     camera_settings_path: Optional[Path] = None
     if args.camera_settings == "":
@@ -909,11 +951,12 @@ def main() -> None:
     )
     if use_keyboard:
         _banner += (
-            "  Keyboard: 's' cycle phase | 'd' discard/reset | 'r' reset | 'm' cycle mode | 'q' quit\n"
+            "  Keyboard: 's' cycle phase (policy→freeze→teleop→save) | "
+            "'d' discard/reset | 'r' reset | 'm' cycle mode | 'q' quit\n"
         )
     if use_pedal:
         _banner += (
-            "  Pedal:    LEFT cycle phase (start policy → takeover → end) | "
+            "  Pedal:    LEFT cycle phase (1:start policy, 2:freeze, 3:handover, 4:save) | "
             "MIDDLE discard/reset | RIGHT cycle mode\n"
         )
     _banner += (
@@ -947,7 +990,7 @@ def main() -> None:
         main_stabilizer.reset()
 
     def _submit_phase_toggle(source: str) -> None:
-        """Pedal 1 / key 's': cycle IDLE → POLICY → TELEOP → (save) → IDLE."""
+        """Pedal 1 / key 's': cycle IDLE → POLICY → FROZEN → TELEOP → (save) → IDLE."""
         def _action() -> None:
             phase = dagger_state.phase
             if phase == Phase.IDLE:
@@ -962,10 +1005,16 @@ def main() -> None:
                 prebuffer.clear()
                 dagger_state.begin_policy_rollout(label=source)
             elif phase == Phase.POLICY_ROLLOUT:
-                # Handover: stop policy publisher, switch GELLO to NORMAL,
-                # wait for transition-ready so the first teleop frame we
-                # record actually comes from GELLO. The recording thread
-                # will flush the pre-buffer as soon as phase==TELEOP.
+                # Freeze: silence the policy publisher and stop pushing to the
+                # prebuffer. GELLO stays IDLE so the robot holds its last pose
+                # while the operator gets set for handover. Frozen frames are
+                # intentionally NOT recorded into the pre-intervention window.
+                dagger_state.begin_frozen(label=source)
+            elif phase == Phase.FROZEN:
+                # Handover: switch GELLO to NORMAL, wait for transition-ready
+                # so the first teleop frame we record actually comes from
+                # GELLO. The main loop will flush the prebuffer (captured
+                # during POLICY_ROLLOUT) as soon as phase == TELEOP.
                 dagger_state.begin_teleop(label=source)
                 control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=source)
                 transition_ready_client.wait_for_resume(label=source)
@@ -987,6 +1036,62 @@ def main() -> None:
 
         command_executor.submit(source, "discard", _action)
 
+    def _open_gripper_before_home(arm_name: str, label: str) -> None:
+        """Publish a JointState that keeps arm joints at their current state
+        but moves the gripper joint to its home value.
+
+        This is the first step of the pedal-2 reset sequence: it lets go of
+        whatever the gripper is holding *before* the arm is told to move home.
+        Without it, an arm closed around an object will fight the home
+        trajectory and trigger a protective stop that needs a robot reboot.
+        """
+        cfg = arm_configs.get(arm_name)
+        names = home_joint_names.get(arm_name, [])
+        home = home_positions.get(arm_name, [])
+        if cfg is None or not names or not home:
+            return
+
+        gripper_suffix = cfg.gripper_joint  # e.g. "robotiq_85_left_knuckle_joint"
+        # Match by suffix so left/right prefixes (e.g. "left_robotiq_...") resolve.
+        try:
+            g_idx = next(i for i, n in enumerate(names) if n.endswith(gripper_suffix))
+        except StopIteration:
+            logging.warning(
+                "[%s] gripper joint suffix %r not found in home_joint_names; "
+                "skipping gripper-open pre-step",
+                arm_name, gripper_suffix,
+            )
+            return
+
+        current = _home_state_source(arm_name)
+        if current is None or len(current) < len(names):
+            logging.warning(
+                "[%s] current state unavailable; skipping gripper-open pre-step",
+                arm_name,
+            )
+            return
+
+        positions = [float(current[i]) for i in range(len(names))]
+        positions[g_idx] = float(home[g_idx])
+
+        # Reuse the JointState publisher that home_sender already owns so we
+        # don't race with it on the same action topic.
+        pub = home_sender._publishers.get(arm_name)
+        if pub is None:
+            return
+
+        msg = JointStateMsg()
+        msg.header.stamp.sec = 3
+        msg.header.stamp.nanosec = 0
+        msg.name = list(names)
+        msg.position = positions
+        pub.publish(msg)
+        logging.info(
+            "[%s] [%s] Gripper-open published (idx %d, target %.4f); holding arm at current state",
+            label, arm_name, g_idx, positions[g_idx],
+        )
+        time.sleep(3.0)
+
     def _submit_reset(source: str) -> None:
         def _action() -> None:
             if dagger_state.is_recording:
@@ -998,7 +1103,16 @@ def main() -> None:
                 if use_reset_client and reset_request_client is not None:
                     reset_request_client.call(label=source)
                 else:
-                    home_sender.send_home(home_positions, home_joint_names)
+                    # Sequence:
+                    #   1. open right gripper
+                    #   2. open left gripper
+                    #   3. home arms sequentially (right first, then left)
+                    reset_arm_order = [a for a in ("right", "left") if a in home_positions]
+                    for arm in reset_arm_order:
+                        _open_gripper_before_home(arm, label=source)
+                    ordered_home_positions = {a: home_positions[a] for a in reset_arm_order}
+                    ordered_home_joint_names = {a: home_joint_names[a] for a in reset_arm_order}
+                    home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
                     reset_service_client.call(label=source)
             finally:
                 dagger_state.set_resetting(False)
@@ -1125,6 +1239,30 @@ def main() -> None:
             logging.info("Pre-buffer flushed: %d frames (action_source=0)", flushed)
         return flushed
 
+    def _coerce_scalar_episode_columns() -> None:
+        """Work around a LeRobot + numpy-2.x mismatch on shape-(1,) features.
+
+        LeRobot declares our ``action_source`` feature with ``shape=(1,)``.
+        ``get_hf_features_from_features`` special-cases that shape as a scalar
+        ``datasets.Value(dtype="int64")`` column (feature_utils.py), but
+        ``dataset.add_frame`` validates each entry as an ndarray of shape (1,).
+        At ``save_episode`` time ``Dataset.from_dict`` calls ``int(value)`` for
+        each row; numpy 2.x no longer allows that on a 1-D ndarray and raises
+        ``TypeError: only 0-dimensional arrays can be converted to Python
+        scalars``. Flatten the buffered values to Python ints right before the
+        save so the HF ``Value`` encoder is happy.
+        """
+        buf = getattr(dataset, "writer", None)
+        if buf is None:
+            return
+        ep_buffer = getattr(buf, "episode_buffer", None)
+        if not ep_buffer:
+            return
+        if "action_source" in ep_buffer:
+            ep_buffer["action_source"] = [
+                int(np.asarray(v).reshape(-1)[0]) for v in ep_buffer["action_source"]
+            ]
+
     def _drain_save_request() -> None:
         nonlocal teleop_frames_in_episode
         save_flag, discard_flag = dagger_state.take_save_request()
@@ -1145,6 +1283,7 @@ def main() -> None:
             recording_stats.write(stats_path, args.hz)
             prebuffer.clear()
             return
+        _coerce_scalar_episode_columns()
         try:
             dataset.save_episode()
             recording_stats.record_save()
@@ -1190,6 +1329,12 @@ def main() -> None:
                 f"buf {len(prebuffer)}/{prebuffer.max_frames}  step {step_count}"
             )
             color = (0, 220, 0)
+        elif phase == Phase.FROZEN:
+            label = (
+                f"FROZEN  ep {dagger_state.episode_idx}  "
+                f"buf {len(prebuffer)}/{prebuffer.max_frames}  (pedal 1 → handover)"
+            )
+            color = (0, 200, 255)
         elif phase == Phase.TELEOP_CORRECTION:
             label = (
                 f"CORRECTING  ep {dagger_state.episode_idx}  "
@@ -1295,8 +1440,11 @@ def main() -> None:
                 phase = dagger_state.phase
                 _drain_save_request()  # harmless when no save pending
 
-                # Idle / saving path: just render + sleep.
-                if phase == Phase.IDLE or phase == Phase.SAVING:
+                # Idle / frozen / saving path: just render + sleep.
+                # FROZEN explicitly skips policy inference and prebuffer pushes
+                # so frames between pedal-1-press-2 (freeze) and pedal-1-press-3
+                # (handover) never enter the saved episode.
+                if phase == Phase.IDLE or phase == Phase.FROZEN or phase == Phase.SAVING:
                     if preview is not None:
                         key = preview.render(frames, _draw_overlay)
                         if key in (ord('q'), ord('Q'), 27):
@@ -1471,6 +1619,7 @@ def main() -> None:
             # If we're quitting mid-teleop, best-effort save what we have.
             if dagger_state.is_teleop and teleop_frames_in_episode > 0:
                 logging.info("Saving in-progress episode before exit...")
+                _coerce_scalar_episode_columns()
                 dataset.save_episode()
                 recording_stats.record_save()
                 recording_stats.write(stats_path, args.hz)

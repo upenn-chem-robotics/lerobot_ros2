@@ -831,7 +831,6 @@ def build_features(
 # ── Argument parsing ──────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
-    cfg = load_config()
     parser = argparse.ArgumentParser(
         description="Record monolateral or bimanual demonstrations via ROS 2 in LeRobot format."
     )
@@ -843,8 +842,9 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--left", action="store_true", help="Left arm only.")
     group.add_argument("--right", action="store_true", help="Right arm only.")
     parser.add_argument("--hz", type=float,
-                        default=cfg.get("recording", {}).get("hz", 10.0),
-                        help="Recording frequency in Hz (default: from config).")
+                        default=None,
+                        help="Recording frequency in Hz. "
+                             "Defaults to recording.hz from --config.")
     parser.add_argument("--visualize", action="store_true",
                         help="Show live camera feeds (works with keyboard and/or pedal).")
     parser.add_argument(
@@ -903,6 +903,9 @@ def main() -> None:
     args = parse_args()
     config_path = resolve_config_path(args.config)
     cfg = load_config(config_path)
+
+    if args.hz is None:
+        args.hz = float(cfg.get("recording", {}).get("hz", 10.0))
 
     if args.left:
         arm_keys = ["left"]
