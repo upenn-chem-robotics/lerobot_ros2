@@ -41,6 +41,7 @@ Usage:
         --policy outputs/dp_pick_place/checkpoints/last/pretrained_model
     lerobot-ros-dagger --name ... --task "..." --policy ... --visualize \\
         --recording-control keyboard,pedal
+        
 """
 
 from __future__ import annotations
