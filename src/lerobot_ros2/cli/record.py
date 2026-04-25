@@ -1480,6 +1480,15 @@ def main() -> None:
             except Exception:
                 pass
 
+        # Best-effort: flip GELLO back to IDLE so the next lerobot-ros run
+        # inherits a sane state. Does not gate shutdown if the service is gone.
+        try:
+            control_mode_client.set_mode(
+                GelloControlModeClient.MODE_IDLE, label="shutdown"
+            )
+        except Exception as e:
+            logging.warning(f"Could not reset GELLO to IDLE on shutdown: {e}")
+
         node.destroy_node()
         rclpy.try_shutdown()
 

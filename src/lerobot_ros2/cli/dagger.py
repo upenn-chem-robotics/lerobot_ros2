@@ -1092,6 +1092,54 @@ def main() -> None:
         )
         time.sleep(3.0)
 
+    # Tolerances for the skip-if-already-home / verify-reached-home logic
+    # below. Values are in radians on non-gripper joints.
+    #   * SKIP threshold: tight — only skip the home publish if the arm is
+    #     essentially already there. Leaves room for normal motion commands.
+    #   * VERIFY threshold: looser — we expect the arm to be within this much
+    #     of home after the 10-s sleep the home publisher takes. If it isn't,
+    #     the controller didn't act on the command (protective stop, inactive
+    #     controller, RTDE shutdown, etc.).
+    _HOME_SKIP_TOL_RAD = 0.02
+    _HOME_VERIFY_TOL_RAD = 0.08
+
+    def _arm_gripper_index(arm_name: str) -> int:
+        """Return the index of the gripper joint in home_joint_names[arm_name],
+        or -1 if none can be resolved."""
+        cfg = arm_configs.get(arm_name)
+        names = home_joint_names.get(arm_name, [])
+        if cfg is None or not names:
+            return -1
+        suffix = cfg.gripper_joint
+        for i, n in enumerate(names):
+            if n.endswith(suffix):
+                return i
+        return -1
+
+    def _arm_non_gripper_max_delta(arm_name: str) -> Optional[float]:
+        """Max-abs error (rad) between current arm state and the home target,
+        across all NON-gripper joints. ``None`` if state or config is missing.
+
+        Used by the reset path to (a) skip home publishes for arms already at
+        home and (b) verify after the home sleep that the arm actually moved.
+        """
+        names = home_joint_names.get(arm_name, [])
+        home = home_positions.get(arm_name, [])
+        if not names or not home or len(home) < len(names):
+            return None
+        current = _home_state_source(arm_name)
+        if current is None or len(current) < len(names):
+            return None
+        g_idx = _arm_gripper_index(arm_name)
+        max_delta = 0.0
+        for i in range(len(names)):
+            if i == g_idx:
+                continue
+            if i >= len(current):
+                continue
+            max_delta = max(max_delta, abs(float(current[i]) - float(home[i])))
+        return max_delta
+
     def _submit_reset(source: str) -> None:
         def _action() -> None:
             if dagger_state.is_recording:
@@ -1106,14 +1154,82 @@ def main() -> None:
                     # Sequence:
                     #   1. open right gripper
                     #   2. open left gripper
-                    #   3. home arms sequentially (right first, then left)
+                    #   3. home any arm that isn't already at home
+                    #   4. verify each arm ended up at home
                     reset_arm_order = [a for a in ("right", "left") if a in home_positions]
                     for arm in reset_arm_order:
                         _open_gripper_before_home(arm, label=source)
-                    ordered_home_positions = {a: home_positions[a] for a in reset_arm_order}
-                    ordered_home_joint_names = {a: home_joint_names[a] for a in reset_arm_order}
-                    home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
+
+                    # Skip the home publish for arms already essentially at
+                    # home. Republishing a zero-delta trajectory is wasted
+                    # wall-clock at best and, on the custom UR bridge we've
+                    # seen misbehave, can put the controller in a state where
+                    # the *next* non-zero command is ignored too.
+                    homing_arms: List[str] = []
+                    for arm in reset_arm_order:
+                        delta = _arm_non_gripper_max_delta(arm)
+                        if delta is None:
+                            # State unavailable — be safe and publish.
+                            homing_arms.append(arm)
+                            continue
+                        if delta < _HOME_SKIP_TOL_RAD:
+                            logging.info(
+                                "[%s] [%s] already at home (max_delta=%.4f rad); "
+                                "skipping home publish",
+                                source, arm, delta,
+                            )
+                            continue
+                        homing_arms.append(arm)
+
+                    if homing_arms:
+                        ordered_home_positions = {a: home_positions[a] for a in homing_arms}
+                        ordered_home_joint_names = {a: home_joint_names[a] for a in homing_arms}
+                        home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
+
                     reset_service_client.call(label=source)
+
+                    # Verify every arm ended up at home. An arm whose home
+                    # publish we skipped should still be at home; an arm whose
+                    # home publish ran should be at home after send_home's
+                    # per-arm 10-s sleep. If not, the controller didn't act —
+                    # surface that immediately so the operator knows it's a
+                    # robot-side issue and no amount of pedal pressing will fix
+                    # it.
+                    any_stuck = False
+                    for arm in reset_arm_order:
+                        delta = _arm_non_gripper_max_delta(arm)
+                        if delta is None:
+                            logging.warning(
+                                "[%s] [%s] post-reset verification skipped — state unavailable",
+                                source, arm,
+                            )
+                            continue
+                        if delta > _HOME_VERIFY_TOL_RAD:
+                            any_stuck = True
+                            logging.error(
+                                "[%s] [%s] DID NOT REACH HOME after reset "
+                                "(max_delta=%.3f rad, tol=%.3f). The arm "
+                                "controller on ur_robotiq likely did not "
+                                "execute the trajectory — possible protective "
+                                "stop, inactive controller, or dead hardware "
+                                "interface. Check the ur_robotiq container "
+                                "logs and `ros2 control list_hardware_components`. "
+                                "Pedal presses will NOT recover this; a driver "
+                                "restart is required.",
+                                source, arm, delta, _HOME_VERIFY_TOL_RAD,
+                            )
+                        else:
+                            logging.info(
+                                "[%s] [%s] at home (max_delta=%.4f rad)",
+                                source, arm, delta,
+                            )
+                    if any_stuck:
+                        logging.error(
+                            "[%s] Reset finished with at least one arm NOT at home. "
+                            "Recording further episodes is unsafe until the arm "
+                            "controller is recovered.",
+                            source,
+                        )
             finally:
                 dagger_state.set_resetting(False)
             logging.info("[%s] Reset complete; ready for next episode", source)
@@ -1639,6 +1755,15 @@ def main() -> None:
                 cam.stop()
             except Exception:
                 pass
+
+        # Best-effort: flip GELLO back to IDLE so the next lerobot-ros run
+        # inherits a sane state. Does not gate shutdown if the service is gone.
+        try:
+            control_mode_client.set_mode(
+                GelloControlModeClient.MODE_IDLE, label="shutdown"
+            )
+        except Exception as e:
+            logging.warning("Could not reset GELLO to IDLE on shutdown: %s", e)
 
         node.destroy_node()
         rclpy.try_shutdown()

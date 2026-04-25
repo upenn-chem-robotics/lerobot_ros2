@@ -516,9 +516,14 @@ class ArmState:
         self.synchronized: bool = False
         self._lock = threading.Lock()
 
-    def update(self, action_qpos: np.ndarray, state_qpos: np.ndarray, synced: bool) -> None:
+    def update(
+        self,
+        action_qpos: Optional[np.ndarray],
+        state_qpos: np.ndarray,
+        synced: bool,
+    ) -> None:
         with self._lock:
-            self.action_qpos = action_qpos.copy()
+            self.action_qpos = action_qpos.copy() if action_qpos is not None else None
             self.state_qpos = state_qpos.copy()
             self.synchronized = synced
 
@@ -769,18 +774,28 @@ class ROSArmStateListener:
         self._maybe_update()
 
     def _maybe_update(self) -> None:
+        # Readiness only requires the STATE topic. The action (command) topic
+        # is something we write to, not read from, during idle/policy phases;
+        # waiting on it blocks startup whenever the previous run left GELLO in
+        # IDLE (nobody is publishing commands, so the subscriber never fires).
+        # Action is captured opportunistically when GELLO or our own policy
+        # publisher echoes into the subscription; consumers tolerate None.
         with self._lock:
-            if (
-                self._latest_action is None
-                or self._latest_state is None
-            ):
+            if self._latest_state is None:
                 return
 
             if not self._initialized:
                 self._initialized = True
-                logging.info(f"[{self._label}] All topics active — recording ready")
+                logging.info(
+                    f"[{self._label}] State topic live — recording ready "
+                    "(action topic will be captured opportunistically)"
+                )
 
-            action = self._latest_action.astype(np.float32)
+            action = (
+                self._latest_action.astype(np.float32)
+                if self._latest_action is not None
+                else None
+            )
             state = self._latest_state.copy()
 
         self._arm_state.update(action_qpos=action, state_qpos=state, synced=True)
