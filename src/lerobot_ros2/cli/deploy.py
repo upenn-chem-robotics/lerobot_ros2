@@ -18,7 +18,7 @@ Usage:
     # Terminal 2: deploy policy
     lerobot-ros-deploy --policy outputs/act_pick_place/checkpoints/last/pretrained_model
     lerobot-ros-deploy --policy outputs/dp_pick_place/checkpoints/last/pretrained_model --visualize
-    XXX
+    X
 """
 
 import argparse
