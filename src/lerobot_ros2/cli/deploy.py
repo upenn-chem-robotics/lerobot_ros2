@@ -14,11 +14,12 @@ Controls (keyboard via OpenCV window):
 Usage:
     # Terminal 1: launch ur_robotiq WITHOUT GELLO
     ros2 launch ur_robotiq control_bimanual_ur3_robotiq.launch.py use_gello:=false ...
+    docker exec -it ur_robotiq bash -c 'source /ws/install/setup.bash; colcon build; ros2 launch ur_robotiq control_bimanual_ur3_robotiq.launch.py left_robot_ip:=192.168.1.4 right_robot_ip:=192.168.1.5 mode:=none use_gello:=true'
+
 
     # Terminal 2: deploy policy
     lerobot-ros-deploy --policy outputs/act_pick_place/checkpoints/last/pretrained_model
     lerobot-ros-deploy --policy outputs/dp_pick_place/checkpoints/last/pretrained_model --visualize
-    X
 """
 
 import argparse
@@ -207,6 +208,147 @@ def _policy_visual_size(policy) -> Optional[Tuple[int, int]]:
         if feature.type == "VISUAL" and len(feature.shape) == 3:
             return int(feature.shape[1]), int(feature.shape[2])
     return None
+
+
+def _diff_against_training_config(
+    policy_path: str, deploy_settings: Dict[str, object]
+) -> Dict[str, object]:
+    """Return a side-by-side comparison of every relevant policy field.
+
+    Compares each entry in ``deploy_settings`` against the matching field
+    inside ``train_config.json`` (which lerobot writes once at the start of
+    training and never modifies). NOTE: we deliberately do *not* read
+    ``config.json`` here — that file is what gets re-loaded into the policy at
+    deploy time, so editing it (e.g. to bump ``n_action_steps`` for a sweep)
+    would make ``config.json`` and ``deploy_settings`` identical, hiding the
+    very override the user is trying to record.
+
+    Result shape::
+
+        {
+          "_summary": "1 of 11 fields differ (n_action_steps)",
+          "fields": {
+            "n_action_steps":      {"train": 8,  "deploy": 16, "match": false},
+            "num_inference_steps": {"train": 10, "deploy": 10, "match": true},
+            ...
+          }
+        }
+
+    If ``train_config.json`` cannot be located, a single ``_warning`` entry is
+    returned so the missing reference is visible in the manifest.
+
+    ``hz`` is excluded because it's a deploy-only knob with no training-time
+    counterpart. ``policy_type`` is mapped to the saved ``policy.type`` field.
+    """
+    base = Path(policy_path)
+    if base.is_file():
+        base = base.parent
+
+    # ``train_config.json`` is normally saved alongside ``config.json`` in the
+    # pretrained_model dir, but some older checkpoints stash it one level up
+    # (next to the ``pretrained_model`` and ``training_state`` folders).
+    candidates = [
+        base / "train_config.json",
+        base.parent / "train_config.json",
+    ]
+    train_cfg_path = next((p for p in candidates if p.is_file()), None)
+    if train_cfg_path is None:
+        logging.warning(
+            "No train_config.json found near %s; cannot compute deploy-vs-train diff. "
+            "Looked in: %s",
+            policy_path,
+            ", ".join(str(p) for p in candidates),
+        )
+        return {
+            "_warning": (
+                "train_config.json not found next to checkpoint; deploy-vs-train "
+                "comparison skipped."
+            )
+        }
+    try:
+        train_cfg_full = json.loads(train_cfg_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Could not parse %s: %s", train_cfg_path, exc)
+        return {"_warning": f"Failed to parse {train_cfg_path}: {exc}"}
+
+    # The training-time policy hyperparameters live under the ``policy`` block
+    # of train_config.json (see scripts/lerobot_train.py).
+    train_policy = train_cfg_full.get("policy") or {}
+
+    # Map manifest field name -> key as it appears under train_config.policy.
+    field_to_cfg_key = {
+        "policy_type": "type",
+        "n_obs_steps": "n_obs_steps",
+        "n_action_steps": "n_action_steps",
+        "horizon": "horizon",
+        "num_inference_steps": "num_inference_steps",
+        "num_train_timesteps": "num_train_timesteps",
+        "noise_scheduler_type": "noise_scheduler_type",
+        "prediction_type": "prediction_type",
+        "use_amp": "use_amp",
+        "vision_backbone": "vision_backbone",
+        "device": "device",
+    }
+
+    fields: Dict[str, object] = {}
+    differing: List[str] = []
+    for manifest_key, cfg_key in field_to_cfg_key.items():
+        if manifest_key not in deploy_settings:
+            continue
+        if cfg_key not in train_policy:
+            continue
+        deploy_val = deploy_settings[manifest_key]
+        train_val = train_policy[cfg_key]
+        match = deploy_val == train_val
+        fields[manifest_key] = {
+            "train": train_val,
+            "deploy": deploy_val,
+            "match": match,
+        }
+        if not match:
+            differing.append(manifest_key)
+
+    if not fields:
+        return {"_warning": "No comparable policy fields found in train_config.json."}
+
+    if differing:
+        summary = (
+            f"{len(differing)} of {len(fields)} fields differ "
+            f"({', '.join(differing)})"
+        )
+    else:
+        summary = f"all {len(fields)} fields match training"
+
+    return {"_summary": summary, "fields": fields}
+
+
+def _summarize_deploy_settings(policy, hz: float) -> Dict[str, object]:
+    """Pull the deploy-relevant policy fields out for top-level visibility.
+
+    Anything accessed here lives inside ``policy.config`` (the *currently
+    loaded* policy at deploy time), so it reflects exactly what's running —
+    even if the user overrode something via CLI before calling
+    ``predict_action_chunk``.
+    """
+    cfg = policy.config
+
+    def _get(name, default=None):
+        return getattr(cfg, name, default)
+
+    return {
+        "hz": float(hz),
+        "policy_type": getattr(cfg, "type", None),
+        "n_obs_steps": _get("n_obs_steps"),
+        "n_action_steps": _get("n_action_steps"),
+        "horizon": _get("horizon"),
+        "num_inference_steps": _get("num_inference_steps"),
+        "num_train_timesteps": _get("num_train_timesteps"),
+        "noise_scheduler_type": _get("noise_scheduler_type"),
+        "prediction_type": _get("prediction_type"),
+        "use_amp": _get("use_amp"),
+        "vision_backbone": _get("vision_backbone"),
+        "device": _get("device"),
+    }
 
 
 def _resolve_arm_keys(
@@ -482,6 +624,14 @@ def main() -> None:
                 args.hz,
             )
 
+        # Snapshot of the *currently loaded* policy's deploy-time knobs
+        # (n_action_steps, num_inference_steps, etc.) and a compact list of any
+        # fields that diverge from the training-time config.json sitting next
+        # to the checkpoint. The full config.json/train_config.json live
+        # alongside the checkpoint, no need to duplicate them here.
+        deploy_settings_summary = _summarize_deploy_settings(policy, args.hz)
+        train_diffs = _diff_against_training_config(args.policy, deploy_settings_summary)
+
         # Manifest for this run, co-located with the videos. This is the sole
         # record of what v4l2 settings actually stuck at deploy time (the
         # record-side equivalent lives in recording_config.yaml).
@@ -490,6 +640,8 @@ def main() -> None:
             "deployed_at": datetime.now().isoformat(timespec="seconds"),
             "policy_path": str(args.policy),
             "hz": float(args.hz),
+            "deploy_settings": deploy_settings_summary,
+            "differs_from_training": train_diffs,
             "camera_settings_source": str(camera_settings_path) if camera_settings_path else str(config_path),
             "camera_defaults": cfg.get("camera_defaults") or {},
             "cameras": {

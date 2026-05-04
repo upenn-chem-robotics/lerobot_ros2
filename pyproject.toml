@@ -37,6 +37,7 @@ lerobot-ros-export = "lerobot_ros2.cli.export:main"
 lerobot-ros-probe-cameras = "lerobot_ros2.cli.probe_cameras:main"
 lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
 lerobot-ros-app = "lerobot_ros2.cli.app:main"
+lerobot-ros-train-dagger = "lerobot_ros2.cli.train_dagger:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

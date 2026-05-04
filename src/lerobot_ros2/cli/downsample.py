@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Rename image keys and downsample videos in a LeRobot v3.0 dataset.
 
-Hard-coded mapping (per request):
-    observation.images.camera_00_back            -> observation.images.back
-    observation.images.camera_01_front           -> observation.images.front
-    observation.images.camera_02_left_wrist_top  -> observation.images.left_wrist_top
-    observation.images.camera_03_perspective     -> observation.images.perspective
-    observation.images.camera_04_right_wrist_top -> observation.images.right_wrist_top
+The image-key rename map is derived automatically from the source dataset
+by stripping the ``camera_NN_`` prefix from any ``observation.images.*``
+video feature, e.g.:
+
+    observation.images.camera_00_front           -> observation.images.front
+    observation.images.camera_01_left_wrist_top  -> observation.images.left_wrist_top
+    observation.images.camera_02_perspective     -> observation.images.perspective
+
+This works for any number of cameras (3, 4, 5, ...) and any index numbering
+without code changes — whatever video keys the source ``info.json`` lists
+are the ones that get renamed and downsampled. To exclude a camera from the
+output, use ``--exclude-cameras`` (matched against the *stripped* name,
+e.g. ``--exclude-cameras back right_wrist_top``).
 
 Videos are re-encoded at 1/DOWNSAMPLE resolution (default 5x: 720x1280 -> 144x256).
 
@@ -16,13 +23,15 @@ rebased to start at 0 for each episode so they stay aligned with the
 shifted video metadata.
 
 Usage:
-    lerobot-ros-downsample --src /path/to/src_dataset --dst /path/to/dst_dataset [--skip-first-frames N] [--delete-episodes E1 E2 ...]
+    lerobot-ros-downsample --src /path/to/src_dataset --dst /path/to/dst_dataset \
+        [--skip-first-frames N] [--delete-episodes E1 E2 ...] [--exclude-cameras NAME ...]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,13 +40,72 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-KEY_MAP = {
-    "observation.images.camera_00_back": "observation.images.back",
-    "observation.images.camera_01_front": "observation.images.front",
-    "observation.images.camera_02_left_wrist_top": "observation.images.left_wrist_top",
-    "observation.images.camera_03_perspective": "observation.images.perspective",
-    "observation.images.camera_04_right_wrist_top": "observation.images.right_wrist_top",
-}
+# Populated at runtime by ``derive_key_map`` from the source dataset.
+# Maps original feature keys (``observation.images.camera_NN_<name>``) to the
+# stripped names (``observation.images.<name>``) used downstream by
+# record/deploy/training configs.
+KEY_MAP: dict[str, str] = {}
+
+# Stripped camera names (e.g. ``"back"``) that should be skipped entirely.
+EXCLUDED_CAMERAS: set[str] = set()
+
+_CAMERA_PREFIX_RE = re.compile(r"^observation\.images\.camera_\d+_(?P<name>.+)$")
+
+
+def derive_key_map(src: Path, exclude: set[str] | None = None) -> dict[str, str]:
+    """Build the rename map from the source dataset's ``info.json`` features.
+
+    Any video feature key matching ``observation.images.camera_NN_<name>`` is
+    mapped to ``observation.images.<name>``. Cameras whose stripped name is
+    in ``exclude`` are dropped from the map (and therefore not copied or
+    re-encoded into the destination).
+    """
+    info_path = src / "meta" / "info.json"
+    if not info_path.exists():
+        raise SystemExit(f"Cannot derive camera mapping: missing {info_path}")
+
+    info = json.loads(info_path.read_text())
+    features = info.get("features") or {}
+    exclude = set(exclude or [])
+
+    mapping: dict[str, str] = {}
+    excluded_seen: set[str] = set()
+    skipped_unprefixed: list[str] = []
+
+    for key, ft in features.items():
+        if not isinstance(ft, dict) or ft.get("dtype") != "video":
+            continue
+        match = _CAMERA_PREFIX_RE.match(key)
+        if match is None:
+            # Already stripped or unexpected format; pass through unchanged.
+            skipped_unprefixed.append(key)
+            continue
+        stripped = match.group("name")
+        if stripped in exclude:
+            excluded_seen.add(stripped)
+            continue
+        mapping[key] = f"observation.images.{stripped}"
+
+    print("[info] derived camera rename map:")
+    if not mapping:
+        print("         (no camera_NN_ prefixed video keys found)")
+    for old, new in mapping.items():
+        print(f"         {old}  ->  {new}")
+
+    if skipped_unprefixed:
+        print(f"[info] passing through unrenamed video keys: {skipped_unprefixed}")
+
+    if exclude:
+        missing = exclude - excluded_seen
+        if excluded_seen:
+            print(f"[info] excluded cameras (dropped): {sorted(excluded_seen)}")
+        if missing:
+            print(
+                f"[warn] --exclude-cameras requested {sorted(missing)} but no "
+                f"matching video features were found in the source dataset"
+            )
+
+    return mapping
 
 
 def rename_in_string(s: str) -> str:
@@ -200,30 +268,6 @@ def write_trimmed_data(
         pq.write_table(selected, out)
 
 
-def rewrite_info_json(src: Path, dst: Path, downsample: int, total_frames: int | None = None) -> None:
-    info = json.loads((src / "meta" / "info.json").read_text())
-    new_features = {}
-    for key, ft in info["features"].items():
-        new_key = KEY_MAP.get(key, key)
-        if ft.get("dtype") == "video":
-            ft = json.loads(json.dumps(ft))  # deep copy
-            h, w, c = ft["shape"]
-            new_h, new_w = h // downsample, w // downsample
-            ft["shape"] = [new_h, new_w, c]
-            if "info" in ft:
-                ft["info"]["video.height"] = new_h
-                ft["info"]["video.width"] = new_w
-                ft["info"]["video.codec"] = "h264"
-                ft["info"]["video.pix_fmt"] = "yuv420p"
-        new_features[new_key] = ft
-    info["features"] = new_features
-    if total_frames is not None:
-        info["total_frames"] = total_frames
-    out = dst / "meta" / "info.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(info, indent=4))
-
-
 def rewrite_info_json(
     src: Path,
     dst: Path,
@@ -234,8 +278,12 @@ def rewrite_info_json(
     info = json.loads((src / "meta" / "info.json").read_text())
     new_features = {}
     for key, ft in info["features"].items():
-        new_key = KEY_MAP.get(key, key)
         if ft.get("dtype") == "video":
+            # Drop video features that were excluded from KEY_MAP (e.g. via
+            # --exclude-cameras, or unprefixed keys we chose not to carry).
+            if _CAMERA_PREFIX_RE.match(key) is not None and key not in KEY_MAP:
+                continue
+            new_key = KEY_MAP.get(key, key)
             ft = json.loads(json.dumps(ft))  # deep copy
             h, w, c = ft["shape"]
             new_h, new_w = h // downsample, w // downsample
@@ -245,6 +293,8 @@ def rewrite_info_json(
                 ft["info"]["video.width"] = new_w
                 ft["info"]["video.codec"] = "h264"
                 ft["info"]["video.pix_fmt"] = "yuv420p"
+        else:
+            new_key = KEY_MAP.get(key, key)
         new_features[new_key] = ft
     info["features"] = new_features
     if total_frames is not None:
@@ -282,12 +332,34 @@ def rewrite_stats_json(src: Path, dst: Path, total_frames: int | None = None) ->
     if not p.exists():
         return
     stats = json.loads(p.read_text())
-    new_stats = {KEY_MAP.get(k, k): v for k, v in stats.items()}
+    new_stats: dict[str, object] = {}
+    for k, v in stats.items():
+        # Drop stats for excluded camera_NN_ keys; pass non-video / already-stripped keys through.
+        if _CAMERA_PREFIX_RE.match(k) is not None and k not in KEY_MAP:
+            continue
+        new_stats[KEY_MAP.get(k, k)] = v
     if total_frames is not None:
         for key, value in list(new_stats.items()):
             if key.endswith("/count"):
                 new_stats[key] = _replace_count_leaves(value, total_frames)
     (dst / "meta" / "stats.json").write_text(json.dumps(new_stats, indent=4))
+
+
+def _is_excluded_video_column(column_name: str) -> bool:
+    """True if a parquet column belongs to a camera_NN_ feature we are not keeping.
+
+    ``episodes.parquet`` stores per-episode video metadata columns named like
+    ``videos/observation.images.camera_NN_<name>/from_timestamp``. Columns
+    referencing any ``camera_NN_<name>`` whose feature key is *not* in
+    ``KEY_MAP`` (i.e. excluded via ``--exclude-cameras``) should be dropped.
+    """
+    if "observation.images.camera_" not in column_name:
+        return False
+    match = re.search(r"observation\.images\.camera_\d+_[^/]+", column_name)
+    if match is None:
+        return False
+    feature_key = match.group(0)
+    return feature_key not in KEY_MAP
 
 
 def rewrite_episodes_parquet(
@@ -307,6 +379,13 @@ def rewrite_episodes_parquet(
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)
         table = pq.read_table(p)
+
+        # Drop columns for excluded cameras *before* renaming, while the
+        # camera_NN_ prefixes are still present (it's how we identify them).
+        keep_cols = [name for name in table.schema.names if not _is_excluded_video_column(name)]
+        if len(keep_cols) != len(table.schema.names):
+            table = table.select(keep_cols)
+
         frame = table.to_pandas()
         frame = frame.rename(columns=rename_in_string)
 
@@ -455,6 +534,17 @@ def main():
         default=[],
         help="Remove these episode indices from the rewritten dataset",
     )
+    ap.add_argument(
+        "--exclude-cameras",
+        nargs="+",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Stripped camera names to drop entirely from the destination "
+            "(e.g. --exclude-cameras back right_wrist_top). Match the name "
+            "after the camera_NN_ prefix has been stripped."
+        ),
+    )
     args = ap.parse_args()
 
     src, dst = args.src.resolve(), args.dst.resolve()
@@ -466,6 +556,13 @@ def main():
     clean_destination(dst)
     source_info = json.loads((src / "meta" / "info.json").read_text())
     source_fps = int(source_info["fps"])
+
+    # Auto-derive the camera rename map from the source dataset, dropping any
+    # cameras the user excluded on the CLI. KEY_MAP and EXCLUDED_CAMERAS are
+    # module-level so the helper functions above pick them up.
+    global KEY_MAP, EXCLUDED_CAMERAS
+    EXCLUDED_CAMERAS = {str(name).strip() for name in args.exclude_cameras if str(name).strip()}
+    KEY_MAP = derive_key_map(src, exclude=EXCLUDED_CAMERAS)
 
     print(
         f"[info] src={src}\n[info] dst={dst}\n[info] downsample={args.downsample}x\n"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DAgger-style correction recorder for UR3e + GELLO — LeRobot dataset format.
+DAgger-style correction recorder for UR3e + GELLO — LeRobot dataset format. 
 
 Combines :mod:`lerobot_ros2.cli.deploy` (policy inference) and
 :mod:`lerobot_ros2.cli.record` (pedal/GELLO handling, LeRobot dataset writes)
@@ -12,7 +12,7 @@ to collect RaC/IWR-style human-correction episodes:
    sized to cover Diffusion Policy's ``n_obs_steps × stride`` history window.
 2. Pedal 1 (2nd press) — freeze. The policy publisher is silenced, inference
    stops, and the prebuffer stops accepting new frames. GELLO is still IDLE so
-   the robot holds its last commanded pose. This gives the operator idle time
+   the robot holds its last commanded pose. This gives the operator idle time 
    to position themselves for handover without polluting the saved episode
    with "frozen" states.
 3. Pedal 1 (3rd press) — human takeover. GELLO ``control_mode`` transitions
