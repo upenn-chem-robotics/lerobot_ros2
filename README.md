@@ -17,7 +17,8 @@ lerobot-ros2/
 │   ├── config_paths.py         `--config` / $GELLO_CONFIG resolution
 │   └── cli/                    Console entry points (see below)
 ├── packages/
-│   └── lerobot_policy_strided_diffusion/   Sibling distribution (lerobot plugin)
+│   ├── lerobot_policy_strided_diffusion/        Sibling distribution (lerobot plugin)
+│   └── lerobot_policy_action_history_diffusion/ Sibling distribution (lerobot plugin)
 └── tests/
 ```
 
@@ -27,12 +28,21 @@ lerobot-ros2/
 # One-shot dev setup (after `pip install -e huggingface/lerobot`)
 pip install -e .
 pip install -e packages/lerobot_policy_strided_diffusion
+pip install -e packages/lerobot_policy_action_history_diffusion
 ```
 
-The strided-diffusion policy plugin has to be a separate distribution
-because `lerobot.utils.import_utils.register_third_party_plugins` discovers
-plugins by enumerating installed distributions whose name starts with
-`lerobot_policy_`.
+Policy plugins live in their own distributions because
+`lerobot.utils.import_utils.register_third_party_plugins` discovers plugins
+by enumerating installed distributions whose name starts with
+`lerobot_policy_`. Two are shipped here:
+
+* `lerobot_policy_strided_diffusion` — `DiffusionPolicy` with a uniformly-strided
+  observation window (e.g. `[obs_{t-1s}, obs_t]` instead of `[obs_{t-0.1s}, obs_t]`
+  at 10 fps); same VRAM as stock `n_obs_steps=2`, longer effective horizon.
+* `lerobot_policy_action_history_diffusion` — `DiffusionPolicy` with a queue
+  of prior commanded actions appended to the FiLM global conditioning vector
+  (no extra image / proprio history); negligible extra compute, targets
+  phase-ambiguity failures at low VRAM cost.
 
 ## Config
 

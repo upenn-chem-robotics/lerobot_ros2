@@ -1,4 +1,4 @@
-"""DAgger-aware sampler that filters anchor frames by ``action_source``.
+"""DAgger-aware samplers that filter and reweight anchor frames by ``action_source``.
 
 When training on a DAgger-aggregated dataset (base demonstrations + dagger
 correction episodes), each dagger episode is a sequence of:
@@ -11,19 +11,26 @@ gets a real "approaching-failure" observation history (via DiffusionPolicy's
 "current" frame ``t`` whose action chunk would otherwise contain the
 policy's failure command.
 
-This sampler subclasses :class:`lerobot.datasets.sampler.EpisodeAwareSampler`
-and, after the parent has computed valid anchors via
-``drop_n_first_frames`` / ``drop_n_last_frames``, drops any anchor index
-``i`` where ``action_source[i] == 0``.
+Two samplers are provided:
+
+* :class:`ActionSourceAwareEpisodeSampler` -- subclass of
+  :class:`lerobot.datasets.sampler.EpisodeAwareSampler` that drops any
+  anchor with ``action_source == 0`` and otherwise iterates uniformly.
+* :class:`WeightedDaggerEpisodeSampler` -- subclass of the above that
+  additionally re-weights anchors per epoch so that base-episode anchors
+  and dagger-episode anchors hit a target sampling fraction (e.g. ensure
+  dagger frames make up 25 % of training samples even though they are
+  naturally 55 % of the surviving anchors).
 
 The dataset rows themselves are *not* modified; only the sampler's anchor
-list is filtered, so observations from prefix frames remain reachable as
-history context for nearby human-takeover anchors.
+list (and its sampling distribution) changes, so observations from prefix
+frames remain reachable as history context for nearby human-takeover
+anchors.
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import numpy as np
 import torch
@@ -83,3 +90,137 @@ class ActionSourceAwareEpisodeSampler(EpisodeAwareSampler):
             )
 
         self.dropped_by_action_source = before - after
+
+
+class WeightedDaggerEpisodeSampler(ActionSourceAwareEpisodeSampler):
+    """Action-source-aware sampler with weighted base/dagger sampling per epoch.
+
+    After the parent has filtered anchors to ``action_source == 1``, this
+    sampler classifies each surviving anchor as belonging to a *base*
+    episode (every frame in the episode has ``action_source == 1``) or a
+    *dagger* episode (the episode contains at least one ``action_source == 0``
+    frame). It then assigns a per-anchor weight so that, in expectation,
+    ``dagger_fraction`` of the ``num_samples`` indices yielded per epoch
+    come from dagger episodes.
+
+    Per epoch, ``__iter__`` draws ``num_samples`` anchors with replacement
+    using :func:`torch.multinomial`. ``num_samples`` defaults to the number
+    of surviving anchors so training-time per epoch is unchanged.
+
+    If ``dagger_fraction`` is ``None``, the sampler degrades to its parent's
+    uniform iteration (same indices, same order semantics).
+
+    Args:
+        dataset_from_indices: per-episode start row index (forwarded).
+        dataset_to_indices: per-episode end row index (forwarded).
+        action_source: per-frame ``action_source`` array (forwarded to parent).
+        is_dagger_per_frame: 1-D ``bool`` array of length ``num_frames``.
+            ``True`` iff the row's episode contains any ``action_source == 0``
+            frame. Required when ``dagger_fraction`` is set.
+        dagger_fraction: desired fraction of dagger-episode samples per
+            epoch in ``[0, 1]``. If ``None``, fall back to uniform sampling.
+        num_samples: number of anchors yielded per epoch. Defaults to
+            ``len(self.indices)`` (i.e. preserves the parent's epoch size).
+        generator: optional :class:`torch.Generator` for reproducible
+            weighted draws. Defaults to PyTorch's global RNG.
+        episode_indices_to_use, drop_n_first_frames, drop_n_last_frames,
+        shuffle: forwarded to parent.
+    """
+
+    def __init__(
+        self,
+        dataset_from_indices: Iterable[int],
+        dataset_to_indices: Iterable[int],
+        action_source: np.ndarray | torch.Tensor | list[int],
+        is_dagger_per_frame: np.ndarray | torch.Tensor | list[bool] | None = None,
+        dagger_fraction: float | None = None,
+        num_samples: int | None = None,
+        generator: torch.Generator | None = None,
+        episode_indices_to_use: list | None = None,
+        drop_n_first_frames: int = 0,
+        drop_n_last_frames: int = 0,
+        shuffle: bool = False,
+    ) -> None:
+        super().__init__(
+            dataset_from_indices,
+            dataset_to_indices,
+            action_source=action_source,
+            episode_indices_to_use=episode_indices_to_use,
+            drop_n_first_frames=drop_n_first_frames,
+            drop_n_last_frames=drop_n_last_frames,
+            shuffle=shuffle,
+        )
+
+        self.dagger_fraction = dagger_fraction
+        self.num_samples = int(num_samples) if num_samples is not None else len(self.indices)
+        self.generator = generator
+        self.n_base_anchors = len(self.indices)
+        self.n_dagger_anchors = 0
+        self.weights: torch.Tensor | None = None
+
+        if dagger_fraction is None:
+            return
+
+        if not (0.0 <= float(dagger_fraction) <= 1.0):
+            raise ValueError(
+                f"dagger_fraction must be in [0, 1], got {dagger_fraction!r}"
+            )
+        if is_dagger_per_frame is None:
+            raise ValueError(
+                "is_dagger_per_frame is required when dagger_fraction is set"
+            )
+
+        if isinstance(is_dagger_per_frame, torch.Tensor):
+            is_dagger_per_frame = is_dagger_per_frame.cpu().numpy()
+        is_dagger_arr = np.asarray(is_dagger_per_frame).reshape(-1).astype(bool)
+
+        anchor_idx = np.asarray(self.indices, dtype=np.int64)
+        if anchor_idx.size and anchor_idx.max() >= is_dagger_arr.size:
+            raise ValueError(
+                f"is_dagger_per_frame has length {is_dagger_arr.size} but anchor "
+                f"indices reach {int(anchor_idx.max())}; arrays must be aligned"
+            )
+        anchor_is_dagger = is_dagger_arr[anchor_idx]
+
+        n_base = int((~anchor_is_dagger).sum())
+        n_dagger = int(anchor_is_dagger.sum())
+        self.n_base_anchors = n_base
+        self.n_dagger_anchors = n_dagger
+
+        if dagger_fraction > 0 and n_dagger == 0:
+            raise ValueError(
+                "dagger_fraction > 0 was requested but no surviving anchors come "
+                "from dagger episodes. Check is_dagger_per_frame."
+            )
+        if dagger_fraction < 1 and n_base == 0:
+            raise ValueError(
+                "dagger_fraction < 1 was requested but no surviving anchors come "
+                "from base episodes. Check is_dagger_per_frame."
+            )
+
+        weights = torch.empty(len(self.indices), dtype=torch.double)
+        if n_base > 0:
+            weights[torch.from_numpy(~anchor_is_dagger)] = (
+                (1.0 - float(dagger_fraction)) / n_base
+            )
+        if n_dagger > 0:
+            weights[torch.from_numpy(anchor_is_dagger)] = (
+                float(dagger_fraction) / n_dagger
+            )
+        self.weights = weights
+
+    def __iter__(self) -> Iterator[int]:
+        if self.weights is None:
+            yield from super().__iter__()
+            return
+        chosen = torch.multinomial(
+            self.weights,
+            num_samples=self.num_samples,
+            replacement=True,
+            generator=self.generator,
+        )
+        for i in chosen.tolist():
+            yield self.indices[int(i)]
+
+    def __len__(self) -> int:
+        return self.num_samples if self.weights is not None else len(self.indices)

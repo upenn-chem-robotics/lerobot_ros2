@@ -30,7 +30,59 @@ from .data_loader import ArmSpec, TeleopDataset
 
 _CAM_WIDTH = 640
 _MAX_COLS = 3
-_VIDEO_CODECS = ("avc1", "H264", "mp4v", "XVID")
+_PYAV_CODECS = ("libopenh264", "libsvtav1", "mpeg4")
+
+
+class _PyAvWriter:
+    """Thin shim that mimics enough of ``cv2.VideoWriter`` for BGR frame input.
+
+    Uses PyAV's bundled ffmpeg/libav encoders so MP4 export works in
+    environments where OpenCV's ffmpeg backend has no software H.264
+    encoder (e.g. containers without ``/dev/video1[0-9]`` for the kernel
+    ``h264_v4l2m2m`` hw encoder).
+    """
+
+    def __init__(self, path: Path, width: int, height: int, fps: float, codec: str) -> None:
+        self._container = av.open(str(path), mode="w")
+        try:
+            self._stream = self._container.add_stream(codec, rate=int(round(fps)))
+            self._stream.width = int(width)
+            self._stream.height = int(height)
+            self._stream.pix_fmt = "yuv420p"
+            self._stream.bit_rate = max(1_000_000, int(width) * int(height) * 2)
+        except Exception:
+            self._container.close()
+            raise
+
+    def write(self, bgr_frame: np.ndarray) -> None:
+        frame = av.VideoFrame.from_ndarray(bgr_frame, format="bgr24")
+        for packet in self._stream.encode(frame):
+            self._container.mux(packet)
+
+    def release(self) -> None:
+        try:
+            for packet in self._stream.encode():
+                self._container.mux(packet)
+        finally:
+            self._container.close()
+
+
+def _open_video_writer(path: Path, width: int, height: int, fps: float) -> _PyAvWriter:
+    """Open the first PyAV codec from ``_PYAV_CODECS`` that successfully writes ``path``."""
+    last_err: Exception | None = None
+    for codec in _PYAV_CODECS:
+        try:
+            return _PyAvWriter(path, width, height, fps, codec)
+        except Exception as e:
+            last_err = e
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+    raise RuntimeError(
+        "No usable video encoder is available through PyAV for MP4 export. "
+        f"Tried: {', '.join(_PYAV_CODECS)} (last error: {last_err})"
+    )
 
 
 def compute_grid_shape(item_count: int) -> tuple[int, int]:
@@ -476,25 +528,9 @@ def export_episode_video(
 
     first_frame = _compose_frame(0)
 
-    writer = None
-    for codec_name in _VIDEO_CODECS:
-        fourcc = cv2.VideoWriter_fourcc(*codec_name)
-        candidate = cv2.VideoWriter(
-            str(output_path),
-            fourcc,
-            float(fps),
-            (first_frame.shape[1], first_frame.shape[0]),
-        )
-        if candidate.isOpened():
-            writer = candidate
-            break
-        candidate.release()
-
-    if writer is None:
-        raise RuntimeError(
-            "No usable video encoder is available through OpenCV for MP4 export. "
-            f"Tried: {', '.join(_VIDEO_CODECS)}"
-        )
+    writer = _open_video_writer(
+        output_path, first_frame.shape[1], first_frame.shape[0], float(fps)
+    )
 
     writer.write(first_frame)
     if progress_callback:
@@ -584,25 +620,9 @@ def export_episode_grid_video(
 
     first_frame = _compose_frame(0)
 
-    writer = None
-    for codec_name in _VIDEO_CODECS:
-        fourcc = cv2.VideoWriter_fourcc(*codec_name)
-        candidate = cv2.VideoWriter(
-            str(output_path),
-            fourcc,
-            float(fps),
-            (first_frame.shape[1], first_frame.shape[0]),
-        )
-        if candidate.isOpened():
-            writer = candidate
-            break
-        candidate.release()
-
-    if writer is None:
-        raise RuntimeError(
-            "No usable video encoder is available through OpenCV for MP4 export. "
-            f"Tried: {', '.join(_VIDEO_CODECS)}"
-        )
+    writer = _open_video_writer(
+        output_path, first_frame.shape[1], first_frame.shape[0], float(fps)
+    )
 
     writer.write(first_frame)
     if progress_callback:

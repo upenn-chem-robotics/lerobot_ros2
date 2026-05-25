@@ -63,7 +63,7 @@ from lerobot_ros2.helper import (
     resolve_wrap_joints,
     run_cbreak_keyboard_loop,
 )
-from lerobot_ros2.visualizer import LivePreview
+from lerobot_ros2.visualizer import LivePreview, tile_frames_grid
 
 try:
     import rclpy
@@ -77,7 +77,25 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
+from lerobot_ros2.preprocessing import (
+    apply_per_camera_crop,
+    load_per_camera_crops_from_train_config,
+)
 from lerobot_ros2.strided_history import StridedHistoryRunner, load_strided_config
+
+# Importing the plugin registers ``action_history_diffusion`` as a known policy
+# type so checkpoints saved with that ``type`` field can be loaded below. The
+# import is wrapped in try/except so deploy.py still works in environments
+# where the plugin isn't installed (those just can't load action-history
+# checkpoints, but stock diffusion / ACT keep working).
+try:
+    from lerobot_policy_action_history_diffusion import (
+        ActionHistoryDiffusionPolicy,
+    )
+    _ACTION_HISTORY_AVAILABLE = True
+except ImportError:
+    ActionHistoryDiffusionPolicy = None  # type: ignore[assignment]
+    _ACTION_HISTORY_AVAILABLE = False
 
 
 # ── ROS 2 command publisher ──────────────────────────────────────────────
@@ -122,6 +140,18 @@ def detect_training_resize(policy_path: str) -> Optional[Tuple[int, int]]:
             except (json.JSONDecodeError, KeyError):
                 pass
     return None
+
+
+def detect_per_camera_crops(policy_path: str) -> Dict[str, Dict[str, int]]:
+    """Recover ``dataset.image_transforms.per_camera_crops`` from training.
+
+    Mirrors :func:`detect_training_resize`: looks for ``train_config.json``
+    next to ``policy_path`` (or in its parent dir) and returns the validated
+    per-camera crop dictionary so deploy/dagger can apply the exact same
+    front-camera crop the policy was trained with. Returns ``{}`` when the
+    file is missing, malformed, or has no ``per_camera_crops`` block.
+    """
+    return load_per_camera_crops_from_train_config(policy_path)
 
 
 def resolve_experiment_config_path(policy_path: str, explicit_path: Optional[str]) -> Optional[Path]:
@@ -192,6 +222,12 @@ def _load_policy_type(policy_path: str, explicit_mode: str) -> str:
     # load_strided_config pick up the stride parameters separately.
     if raw_type == "strided_diffusion":
         return "diffusion"
+    # The action_history_diffusion plugin DOES change the model architecture
+    # (extra MLP + wider U-Net), so we cannot collapse it into "diffusion"
+    # the way we do for strided. Surface it as its own type and dispatch to
+    # ActionHistoryDiffusionPolicy.from_pretrained below.
+    if raw_type == "action_history_diffusion":
+        return "action_history_diffusion"
     return raw_type
 
 
@@ -460,14 +496,24 @@ def main() -> None:
     # ── Load policy ──────────────────────────────────────────────────────
     logging.info(f"Loading policy from {args.policy}...")
     policy_type = _load_policy_type(args.policy, args.deploy_mode)
-    if policy_type == "diffusion":
+    if policy_type == "action_history_diffusion":
+        if not _ACTION_HISTORY_AVAILABLE:
+            raise RuntimeError(
+                "Checkpoint declares type=action_history_diffusion but the "
+                "lerobot_policy_action_history_diffusion plugin is not installed "
+                "in this environment. Install it with "
+                "`pip install -e packages/lerobot_policy_action_history_diffusion`."
+            )
+        policy = ActionHistoryDiffusionPolicy.from_pretrained(args.policy)
+    elif policy_type == "diffusion":
         policy = DiffusionPolicy.from_pretrained(args.policy)
     else:
         policy = ACTPolicy.from_pretrained(args.policy)
     policy.config.device = device
     policy.to(device)
     policy.eval()
-    if policy_type == "diffusion" and hasattr(policy, "reset"):
+    # Both DiffusionPolicy and its subclass need their queues primed via reset().
+    if policy_type in ("diffusion", "action_history_diffusion") and hasattr(policy, "reset"):
         policy.reset()
 
     # If the checkpoint was trained with a uniform-stride observation
@@ -477,6 +523,8 @@ def main() -> None:
     # The policy itself stays untouched.
     strided_cfg = None
     strided_runner: Optional[StridedHistoryRunner] = None
+    # action_history_diffusion has its own queue layer inside the policy, so it
+    # does NOT use StridedHistoryRunner -- the two extensions are independent.
     if policy_type == "diffusion":
         strided_cfg = load_strided_config(args.policy)
         if strided_cfg is not None:
@@ -521,7 +569,7 @@ def main() -> None:
     image_feature_keys = _image_feature_keys(policy)
     expected_state_dim = policy.config.robot_state_feature.shape[0] if policy.config.robot_state_feature is not None else None
     policy_visual_size = _policy_visual_size(policy)
-    if policy_type == "diffusion":
+    if policy_type in ("diffusion", "action_history_diffusion"):
         logging.info(f"DP observation keys: {image_feature_keys + ['observation.state']}")
         if expected_state_dim is not None:
             logging.info(f"Expected state dimension: {expected_state_dim}")
@@ -537,6 +585,13 @@ def main() -> None:
             "No training resize found; falling back to policy visual size: %sx%s",
             policy_visual_size[0],
             policy_visual_size[1],
+        )
+
+    per_camera_crops = detect_per_camera_crops(args.policy)
+    if per_camera_crops:
+        logging.info(
+            "Auto-detected per-camera crops from train_config.json: %s",
+            per_camera_crops,
         )
 
     # ── Cameras ──────────────────────────────────────────────────────────
@@ -758,7 +813,7 @@ def main() -> None:
             label=key,
         )
     expected_action_dim = sum(len(names) for names in arm_joint_names.values())
-    if policy_type == "diffusion" and expected_state_dim is not None and expected_state_dim != expected_action_dim:
+    if policy_type in ("diffusion", "action_history_diffusion") and expected_state_dim is not None and expected_state_dim != expected_action_dim:
         logging.warning(
             "Policy expects a %s-D state/action, but the configured arms expose %s joints.",
             expected_state_dim,
@@ -778,6 +833,7 @@ def main() -> None:
     # ── Events ───────────────────────────────────────────────────────────
     stop_event = threading.Event()
     running_event = threading.Event()
+    has_run_once = False
     _force_count = 0
 
     def _shutdown(sig, frame):
@@ -799,21 +855,102 @@ def main() -> None:
 
     logging.info(
         f"\nReady — {len(arm_keys)} arm(s), {len(cameras)} camera(s) @ {args.hz} Hz\n"
-        f"  Press SPACE -> replay policy from home\n"
+        f"  Press SPACE -> start rollout (when idle) / stop rollout (when running)\n"
         f"  Press Q     -> quit\n"
-        f"  Waiting for SPACE to replay...\n"
+        f"  Waiting for SPACE to start...\n"
     )
 
     preview: Optional[LivePreview] = None
     cam_labels: List[str] = []
-    if cameras and args.visualize:
+    if cameras:
         cam_labels = [c.display_label if getattr(c, "display_label", "") else f"cam {c.index}" for c in cameras]
 
     terminal_keyboard_enabled = not args.visualize
 
+    # ── Per-episode grid recording ───────────────────────────────────────
+    # Each SPACE press opens a fresh grid_episode_<NNN>.mp4 alongside the
+    # per-camera MP4s. The grid stitches all stabilized cameras into one
+    # frame at args.hz so the full multi-view timeline of a single episode
+    # lives in a single file (handy for slides / side-by-side review).
+    grid_columns = max(1, int((cfg.get("visualization") or {}).get("camera_grid_columns") or 2))
+    grid_rows = int(np.ceil(len(cameras) / grid_columns)) if cameras else 0
+    grid_tile_w = max((int(c.width) for c in cameras), default=0)
+    grid_tile_h = max((int(c.height) for c in cameras), default=0)
+    grid_target_w = grid_columns * grid_tile_w
+    grid_target_h = grid_rows * grid_tile_h
+    grid_writer: Optional[cv2.VideoWriter] = None
+    grid_video_path: Optional[Path] = None
+    grid_frame_count: int = 0
+    grid_labels = [c.name or f"cam{c.index}" for c in cameras]
+
+    def _close_episode_grid_writer() -> None:
+        nonlocal grid_writer, grid_video_path, grid_frame_count
+        if grid_writer is None:
+            return
+        try:
+            grid_writer.release()
+        except Exception:
+            pass
+        logging.info(
+            "Recorded %d grid frames -> %s",
+            grid_frame_count,
+            grid_video_path,
+        )
+        grid_writer = None
+        grid_video_path = None
+        grid_frame_count = 0
+
+    def _open_episode_grid_writer(episode_idx: int) -> None:
+        nonlocal grid_writer, grid_video_path, grid_frame_count
+        if (
+            deploy_run_dir is None
+            or not cameras
+            or grid_target_w <= 0
+            or grid_target_h <= 0
+        ):
+            return
+        path = deploy_run_dir / f"grid_episode_{episode_idx:03d}.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(
+            str(path),
+            fourcc,
+            float(args.hz),
+            (grid_target_w, grid_target_h),
+        )
+        if not writer.isOpened():
+            logging.warning(
+                "Could not open grid VideoWriter at %s (size=%sx%s, fps=%s); "
+                "skipping grid for this episode.",
+                path,
+                grid_target_w,
+                grid_target_h,
+                args.hz,
+            )
+            try:
+                writer.release()
+            except Exception:
+                pass
+            return
+        grid_writer = writer
+        grid_video_path = path
+        grid_frame_count = 0
+        logging.info(
+            "Recording grid -> %s (%sx%s @ %s Hz)",
+            path,
+            grid_target_w,
+            grid_target_h,
+            args.hz,
+        )
+
     def _start_new_episode() -> None:
-        nonlocal episode_count
+        nonlocal episode_count, has_run_once
         running_event.clear()
+        # Close the previous episode's grid writer BEFORE homing so the
+        # homing motion (which can take >10s while send_home blocks) does
+        # not get appended to the prior episode's video. The main control
+        # loop keeps calling _record_frames during the blocking home_sender
+        # call, so leaving the writer open here would include homing.
+        _close_episode_grid_writer()
         if strided_runner is not None:
             strided_runner.reset()
         elif hasattr(policy, "reset"):
@@ -827,6 +964,7 @@ def main() -> None:
         logging.info("REPLAY — homing, then restarting policy")
         home_sender.send_home(home_positions, arm_joint_names)
         episode_count += 1
+        _open_episode_grid_writer(episode_count)
         # Seed wrap-joint offsets from the home pose we just commanded, not
         # from a live state snapshot. The ROS state subscriber runs in a
         # background thread and the most recent cached sample at this point
@@ -840,17 +978,32 @@ def main() -> None:
             if home_arr:
                 wrap_manager.prelatch_offset(arm_name, home_arr, episode_count)
         running_event.set()
+        has_run_once = True
         logging.info(f"REPLAY — policy running (episode {episode_count})")
+
+    def _toggle_policy() -> None:
+        # SPACE acts as a two-stage toggle: stop a running rollout first so
+        # the operator can prepare, then start a fresh rollout on the next
+        # press. Resets happen inside _start_new_episode, so simply clearing
+        # running_event here is enough to halt the loop (the control loop's
+        # `if running_event.is_set(): cmd_publishers[...].send(...)` guard
+        # leaves the robot holding its current pose).
+        if running_event.is_set():
+            running_event.clear()
+            logging.info("STOPPED — press SPACE to start next rollout")
+        else:
+            _start_new_episode()
 
     if terminal_keyboard_enabled:
         threading.Thread(
             target=run_cbreak_keyboard_loop,
-            args=(stop_event, {" ": _start_new_episode}),
+            args=(stop_event, {" ": _toggle_policy}),
             daemon=True,
         ).start()
 
     def _record_frames(frames: List[Optional[np.ndarray]]) -> None:
-        if not video_writers:
+        nonlocal grid_frame_count
+        if not video_writers and grid_writer is None:
             return
         for cam, frame in zip(cameras, frames):
             if frame is None:
@@ -863,11 +1016,29 @@ def main() -> None:
                 frame_counts[cam.name] = frame_counts.get(cam.name, 0) + 1
             except Exception as exc:
                 logging.warning("Failed to write frame for %s: %s", cam.name, exc)
+        if grid_writer is not None and cameras:
+            try:
+                tile = tile_frames_grid(
+                    frames,
+                    grid_labels,
+                    grid_target_w,
+                    grid_target_h,
+                    grid_columns,
+                )
+                grid_writer.write(tile)
+                grid_frame_count += 1
+            except Exception as exc:
+                logging.warning("Failed to write grid frame: %s", exc)
 
     def _ready_overlay(canvas: np.ndarray, disp_w: int, disp_h: int) -> None:
-        status = "READY — press SPACE to replay"
+        status = "READY — press SPACE to start"
         cv2.putText(canvas, status, (20, disp_h - 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 200), 2)
+
+    def _stopped_overlay(canvas: np.ndarray, disp_w: int, disp_h: int) -> None:
+        status = "STOPPED — press SPACE to start next rollout"
+        cv2.putText(canvas, status, (20, disp_h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
 
     def _running_overlay(canvas: np.ndarray, disp_w: int, disp_h: int) -> None:
         status = f"RUNNING  step {step_count}"
@@ -879,7 +1050,7 @@ def main() -> None:
             stop_event.set()
             return True
         if key == ord(' '):
-            _start_new_episode()
+            _toggle_policy()
         return False
 
     try:
@@ -887,7 +1058,7 @@ def main() -> None:
             if cameras and args.visualize:
                 preview = stack.enter_context(
                     LivePreview(
-                        window_name="deploy.py — SPACE=replay, Q=quit",
+                        window_name="deploy.py — SPACE=start/stop, Q=quit",
                         cam_labels=cam_labels,
                         fullscreen=True,
                         wait_key_ms=1,
@@ -906,7 +1077,8 @@ def main() -> None:
 
                 if not running_event.is_set():
                     if preview is not None:
-                        key = preview.render(frames, _ready_overlay)
+                        overlay = _stopped_overlay if has_run_once else _ready_overlay
+                        key = preview.render(frames, overlay)
                         if _handle_preview_key(key):
                             break
                     else:
@@ -932,7 +1104,7 @@ def main() -> None:
                     for key, qpos_raw in zip(arm_keys, state_parts_raw)
                 ]
                 state = np.concatenate(state_parts)
-                if policy_type == "diffusion" and expected_state_dim is not None and state.shape[0] != expected_state_dim:
+                if policy_type in ("diffusion", "action_history_diffusion") and expected_state_dim is not None and state.shape[0] != expected_state_dim:
                     logging.error(
                         "Expected a %s-D state vector for DP, but received %s-D. Check the active arm config.",
                         expected_state_dim,
@@ -955,6 +1127,10 @@ def main() -> None:
                         img_tensor = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
                         if resize_transform is not None:
                             img_tensor = resize_transform(img_tensor)
+                        if per_camera_crops:
+                            img_tensor = apply_per_camera_crop(
+                                img_tensor, feature_key, per_camera_crops
+                            )
                         observation[feature_key] = img_tensor
 
                 missing_features = [key for key in image_feature_keys if key not in observation]
@@ -966,7 +1142,7 @@ def main() -> None:
                     time.sleep(0.05)
                     continue
 
-                if policy_type == "diffusion":
+                if policy_type in ("diffusion", "action_history_diffusion"):
                     observation = {key: observation[key] for key in (image_feature_keys + ["observation.state"])}
 
                 # 3. Run policy
@@ -1024,6 +1200,7 @@ def main() -> None:
                 cam.stop()
             except Exception:
                 pass
+        _close_episode_grid_writer()
         for cam_name, writer in video_writers.items():
             try:
                 writer.release()

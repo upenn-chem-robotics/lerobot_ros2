@@ -1,7 +1,7 @@
 """Gradio-based visualizer for LeRobot v3 teleoperation datasets.
 
 Launch with:
-    lerobot-ros-app [--dataset_dir PATH]
+    lerobot-ros-app --dataset_dir PATH
 """
 
 from __future__ import annotations

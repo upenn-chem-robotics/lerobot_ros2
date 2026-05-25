@@ -82,7 +82,7 @@ camera_defaults:
 
 left_cameras:
   left_wrist_top:
-    port: /dev/video9
+    port: /dev/video4
     settings:
       focus_absolute: 100
   # left_wrist_bottom:
@@ -90,11 +90,11 @@ left_cameras:
   #   settings:
   #     focus_absolute: 100
 
-# right_cameras:
-#   right_wrist_top:
-#     port: /dev/video4
-#     settings:
-#       focus_absolute: 100
+right_cameras:
+  right_wrist_top:
+    port: /dev/video2
+    settings:
+      focus_absolute: 100
 #   # right_wrist_bottom:
 #   #   port: /dev/video12
 
@@ -104,7 +104,7 @@ other_cameras:
     settings:
       focus_absolute: 20
   front:
-    port: /dev/video3
+    port: /dev/video6
     settings:
       focus_absolute: 20
   # back:

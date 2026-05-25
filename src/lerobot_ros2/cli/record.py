@@ -91,13 +91,24 @@ from lerobot_ros2.helper import (
 try:
     import rclpy
     from rclpy.node import Node
+    from rclpy.executors import SingleThreadedExecutor
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import SetParameters as SetParametersSrv
     from std_srvs.srv import Empty as EmptySrv
     from std_srvs.srv import Trigger as TriggerSrv
+    try:
+        # rclpy >= Iron exposes SignalHandlerOptions; older releases don't.
+        # When unavailable we fall back to bare rclpy.init() and rely on our
+        # own SIGINT handler winning the race (best effort).
+        from rclpy.signals import SignalHandlerOptions
+        _RCLPY_SIGNAL_HANDLER_OPTIONS_AVAILABLE = True
+    except ImportError:
+        SignalHandlerOptions = None  # type: ignore[assignment]
+        _RCLPY_SIGNAL_HANDLER_OPTIONS_AVAILABLE = False
     ROS_AVAILABLE = True
 except ImportError:
     ROS_AVAILABLE = False
+    _RCLPY_SIGNAL_HANDLER_OPTIONS_AVAILABLE = False
 
 try:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -988,7 +999,14 @@ def main() -> None:
     recording_stats = RecordingStats.load(stats_path) if _can_resume else RecordingStats()
 
     # ── ROS 2 node + listeners ───────────────────────────────────────────
-    rclpy.init()
+    # Disable rclpy's built-in SIGINT handler so it can't race our own
+    # ``_shutdown`` handler. We need our handler to win deterministically so
+    # the ``finally`` block always runs ``dataset.finalize()`` before any ROS
+    # teardown, and so a second Ctrl-C reliably escalates to ``os._exit``.
+    if _RCLPY_SIGNAL_HANDLER_OPTIONS_AVAILABLE:
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    else:
+        rclpy.init()
     node = rclpy.create_node("imitation_recorder")
 
     svc_cfg = cfg.get("services", {})
@@ -1071,25 +1089,45 @@ def main() -> None:
         reset_return_service = node.create_service(TriggerSrv, "/reset_return", _handle_reset_return)
         logging.info("Reset return service available at /reset_return")
 
-    # Spin ROS in background
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    # Spin ROS in background using an explicit executor we own. Using a bare
+    # ``rclpy.spin(node)`` leaves the wait-set owned by an anonymous internal
+    # executor, which makes ``node.destroy_node()`` deadlock at shutdown:
+    # destroy waits for spin to release the node, spin is parked on the
+    # wait-set. With our own executor we can call ``executor.shutdown(timeout)``
+    # from ``finally`` to wake the spin loop deterministically.
+    ros_executor = SingleThreadedExecutor()
+    ros_executor.add_node(node)
+
+    def _spin_executor() -> None:
+        try:
+            ros_executor.spin()
+        except Exception as exc:  # pragma: no cover - swallow on teardown
+            logging.debug("ROS executor spin exited: %s", exc)
+
+    spin_thread = threading.Thread(target=_spin_executor, daemon=True, name="ros_spin")
     spin_thread.start()
 
     # ── Shared state ─────────────────────────────────────────────────────
     stop_event = threading.Event()
 
     # ── Shutdown handler ─────────────────────────────────────────────────
+    # The lock prevents two signals delivered in quick succession (e.g. the
+    # user holding Ctrl-C) from racing through the ``_shutting_down`` check
+    # before the first invocation has flipped the flag.
+    _shutdown_lock = threading.Lock()
     _shutting_down = False
     _force_count = 0
 
     def _shutdown(sig: int, frame: object) -> None:
         nonlocal _shutting_down, _force_count
-        if _shutting_down:
-            _force_count += 1
-            if _force_count >= 2:
-                logging.warning("Force exit (data may be incomplete)")
-                os._exit(1)
-        _shutting_down = True
+        with _shutdown_lock:
+            if _shutting_down:
+                _force_count += 1
+                if _force_count >= 2:
+                    logging.warning("Force exit (data may be incomplete)")
+                    os._exit(1)
+                return
+            _shutting_down = True
         logging.info("Shutting down (finalizing dataset)...")
         stop_event.set()
 
@@ -1456,6 +1494,7 @@ def main() -> None:
         logging.error(f"Main loop error: {e}")
         stop_event.set()
     finally:
+        # ── Dataset durability (critical path) ─────────────────────────
         try:
             if dataset is not None and recording_state.is_recording:
                 logging.info("Saving in-progress episode before exit...")
@@ -1470,27 +1509,67 @@ def main() -> None:
             if dataset is not None:
                 dataset.finalize()
                 recording_stats.write(stats_path, args.hz)
-                logging.info(f"Done — {recording_state.episode_idx} episode(s) -> {root.resolve()}")
+                logging.info(
+                    f"Dataset finalized — {recording_state.episode_idx} episode(s) "
+                    f"-> {root.resolve()}"
+                )
         except Exception as e:
             logging.warning(f"Error finalizing dataset: {e}")
 
-        for cam in cameras:
-            try:
-                cam.stop()
-            except Exception:
-                pass
-
-        # Best-effort: flip GELLO back to IDLE so the next lerobot-ros run
-        # inherits a sane state. Does not gate shutdown if the service is gone.
-        try:
-            control_mode_client.set_mode(
-                GelloControlModeClient.MODE_IDLE, label="shutdown"
+        # ── Hardware + ROS teardown (best effort, watchdogged) ─────────
+        # By here the dataset is on disk; everything below is camera/ROS
+        # cleanup that has historically deadlocked (rclpy executor + spin
+        # thread + destroy_node interaction). A watchdog timer guarantees
+        # we always exit cleanly even if rclpy refuses to.
+        def _force_exit_watchdog() -> None:
+            logging.warning(
+                "ROS/camera teardown exceeded 5s; forcing exit "
+                "(dataset is already saved)"
             )
-        except Exception as e:
-            logging.warning(f"Could not reset GELLO to IDLE on shutdown: {e}")
+            os._exit(0)
 
-        node.destroy_node()
-        rclpy.try_shutdown()
+        teardown_watchdog = threading.Timer(5.0, _force_exit_watchdog)
+        teardown_watchdog.daemon = True
+        teardown_watchdog.start()
+
+        try:
+            for cam in cameras:
+                try:
+                    cam.stop()
+                except Exception:
+                    pass
+
+            # Best-effort: flip GELLO back to IDLE so the next lerobot-ros
+            # run inherits a sane state. Does not gate shutdown if the
+            # service is gone.
+            try:
+                control_mode_client.set_mode(
+                    GelloControlModeClient.MODE_IDLE, label="shutdown"
+                )
+            except Exception as e:
+                logging.warning(f"Could not reset GELLO to IDLE on shutdown: {e}")
+
+            # Wake the spin thread *before* destroying the node so the
+            # executor releases its wait-set and ``destroy_node`` doesn't
+            # deadlock against an in-flight ``spin()``.
+            try:
+                ros_executor.shutdown(timeout_sec=2.0)
+            except Exception as e:
+                logging.debug("ROS executor shutdown raised: %s", e)
+            spin_thread.join(timeout=2.0)
+
+            try:
+                node.destroy_node()
+            except Exception as e:
+                logging.debug("node.destroy_node raised: %s", e)
+            try:
+                rclpy.try_shutdown()
+            except Exception as e:
+                logging.debug("rclpy.try_shutdown raised: %s", e)
+
+            logging.info("Shutdown complete")
+        finally:
+            teardown_watchdog.cancel()
 
 
 if __name__ == "__main__":

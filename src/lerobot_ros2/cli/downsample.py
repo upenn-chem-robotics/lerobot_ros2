@@ -15,6 +15,13 @@ are the ones that get renamed and downsampled. To exclude a camera from the
 output, use ``--exclude-cameras`` (matched against the *stripped* name,
 e.g. ``--exclude-cameras back right_wrist_top``).
 
+To shrink ``observation.state`` / ``action`` from a bimanual recording into
+a single-arm subset, use ``--exclude-arms`` (matched against the joint
+``names`` listed in ``info.json``). Every joint whose name starts with one
+of the given prefixes is removed from both the per-frame data parquets and
+the per-feature / per-episode statistics. The matching block under the same
+name in ``experiment_config.yaml`` is also stripped from the destination.
+
 Videos are re-encoded at 1/DOWNSAMPLE resolution (default 5x: 720x1280 -> 144x256).
 
 Optionally drop the first N frames from every episode when rewriting the
@@ -24,7 +31,8 @@ shifted video metadata.
 
 Usage:
     lerobot-ros-downsample --src /path/to/src_dataset --dst /path/to/dst_dataset \
-        [--skip-first-frames N] [--delete-episodes E1 E2 ...] [--exclude-cameras NAME ...]
+        [--skip-first-frames N] [--delete-episodes E1 E2 ...] [--exclude-cameras NAME ...] \
+        [--exclude-arms PREFIX ...]
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import yaml
 
 # Populated at runtime by ``derive_key_map`` from the source dataset.
 # Maps original feature keys (``observation.images.camera_NN_<name>``) to the
@@ -49,7 +58,48 @@ KEY_MAP: dict[str, str] = {}
 # Stripped camera names (e.g. ``"back"``) that should be skipped entirely.
 EXCLUDED_CAMERAS: set[str] = set()
 
+# Joint-name prefixes (e.g. ``"left"``) whose joints should be removed from
+# ``observation.state`` / ``action`` and whose matching top-level block in
+# ``experiment_config.yaml`` should be stripped from the destination.
+EXCLUDED_ARM_PREFIXES: set[str] = set()
+
+# Per-feature index lists describing which dimensions of
+# ``observation.state`` / ``action`` survive after applying
+# ``EXCLUDED_ARM_PREFIXES``. Empty when no arm exclusion is requested, so
+# every callsite can short-circuit with ``if not ARM_KEEP_INDICES: ...``.
+ARM_KEEP_INDICES: dict[str, list[int]] = {}
+
+# Original dimensionality of each affected feature, captured from
+# ``info.json`` before slicing. Used to safely guard the per-axis stat
+# slicing in ``stats.json`` and in the per-episode stats parquets.
+ARM_ORIG_DIMS: dict[str, int] = {}
+
+# Feature keys that may be sliced by ``--exclude-arms``.
+STATE_ACTION_KEYS: tuple[str, ...] = ("observation.state", "action")
+
 _CAMERA_PREFIX_RE = re.compile(r"^observation\.images\.camera_\d+_(?P<name>.+)$")
+_EPISODE_STATE_ACTION_COL_RE = re.compile(
+    r"^stats/(?P<feature>observation\.state|action)/[^/]+$"
+)
+
+
+def _arm_prefix_matches(name: str, prefixes: set[str]) -> bool:
+    """True if ``name`` is exactly one of ``prefixes`` or starts with ``<prefix>_``.
+
+    Matching is case-insensitive. Trailing underscores on the user-supplied
+    prefix are ignored, so ``--exclude-arms left`` and ``--exclude-arms left_``
+    behave identically.
+    """
+    if not prefixes:
+        return False
+    lname = name.lower()
+    for raw in prefixes:
+        prefix = raw.lower().rstrip("_")
+        if not prefix:
+            continue
+        if lname == prefix or lname.startswith(prefix + "_"):
+            return True
+    return False
 
 
 def derive_key_map(src: Path, exclude: set[str] | None = None) -> dict[str, str]:
@@ -106,6 +156,103 @@ def derive_key_map(src: Path, exclude: set[str] | None = None) -> dict[str, str]
             )
 
     return mapping
+
+
+def derive_arm_indices(
+    src: Path,
+    exclude_prefixes: set[str],
+) -> tuple[dict[str, list[int]], dict[str, int]]:
+    """Resolve which dims of ``observation.state`` / ``action`` survive.
+
+    Reads ``info.json`` once, finds the ``names`` list for each feature in
+    ``STATE_ACTION_KEYS``, and returns ``(keep_indices, original_dims)``
+    where ``keep_indices[k]`` is the list of indices to retain (sorted,
+    ascending) and ``original_dims[k]`` is the pre-slicing dimensionality.
+
+    With ``exclude_prefixes`` empty this returns ``({}, {})`` so callers can
+    treat "no arm filter" as a strict no-op.
+
+    Refuses (``SystemExit``) to:
+        - leave a feature with zero dimensions, or
+        - end up with mismatched joint sets between ``observation.state`` and
+          ``action`` (which would silently desynchronize state vs action).
+    """
+    info_path = src / "meta" / "info.json"
+    if not info_path.exists():
+        raise SystemExit(f"Cannot derive arm indices: missing {info_path}")
+
+    info = json.loads(info_path.read_text())
+    features = info.get("features") or {}
+
+    if not exclude_prefixes:
+        return {}, {}
+
+    keep: dict[str, list[int]] = {}
+    orig_dims: dict[str, int] = {}
+    kept_name_lists: dict[str, list[str]] = {}
+    for feature_key in STATE_ACTION_KEYS:
+        ft = features.get(feature_key)
+        if not isinstance(ft, dict):
+            continue
+        names = list(ft.get("names") or [])
+        if not names:
+            raise SystemExit(
+                f"--exclude-arms requires `names` on feature '{feature_key}' "
+                f"in {info_path}; got none. Cannot resolve arm membership."
+            )
+        kept_indices = [
+            i for i, n in enumerate(names)
+            if not _arm_prefix_matches(str(n), exclude_prefixes)
+        ]
+        if not kept_indices:
+            raise SystemExit(
+                f"--exclude-arms {sorted(exclude_prefixes)} drops every joint "
+                f"of '{feature_key}'. Refusing to write a 0-D feature."
+            )
+        keep[feature_key] = kept_indices
+        orig_dims[feature_key] = len(names)
+        kept_name_lists[feature_key] = [str(names[i]) for i in kept_indices]
+
+    if "observation.state" in kept_name_lists and "action" in kept_name_lists:
+        if kept_name_lists["observation.state"] != kept_name_lists["action"]:
+            raise SystemExit(
+                "--exclude-arms produced inconsistent slices for "
+                "observation.state vs action. "
+                f"state-kept={kept_name_lists['observation.state']}, "
+                f"action-kept={kept_name_lists['action']}."
+            )
+
+    return keep, orig_dims
+
+
+def _slice_table_state_action(
+    table: pa.Table,
+    keep: dict[str, list[int]],
+) -> pa.Table:
+    """Return ``table`` with state/action list columns sliced to ``keep`` indices.
+
+    Columns absent from the table or absent from ``keep`` are left
+    untouched. The element type of each column is preserved.
+    """
+    if not keep:
+        return table
+    for col_name, idx in keep.items():
+        if col_name not in table.schema.names:
+            continue
+        field = table.schema.field(col_name)
+        elem_type = field.type.value_type
+        rows = table.column(col_name).to_pylist()
+        sliced_values = [
+            None if row is None else [row[i] for i in idx]
+            for row in rows
+        ]
+        sliced = pa.array(sliced_values, type=pa.list_(elem_type))
+        table = table.set_column(
+            table.schema.get_field_index(col_name),
+            col_name,
+            sliced,
+        )
+    return table
 
 
 def rename_in_string(s: str) -> str:
@@ -265,6 +412,8 @@ def write_trimmed_data(
             "index",
             pa.array(group["index"].tolist(), type=selected.schema.field("index").type),
         )
+        if ARM_KEEP_INDICES:
+            selected = _slice_table_state_action(selected, ARM_KEEP_INDICES)
         pq.write_table(selected, out)
 
 
@@ -295,6 +444,19 @@ def rewrite_info_json(
                 ft["info"]["video.pix_fmt"] = "yuv420p"
         else:
             new_key = KEY_MAP.get(key, key)
+            if key in ARM_KEEP_INDICES:
+                # Shrink shape[0] and filter `names` to the kept arm joints.
+                # Other shape dims (typically none for state/action) pass
+                # through untouched so this stays generic if the schema
+                # later grows extra leading axes.
+                keep = ARM_KEEP_INDICES[key]
+                ft = json.loads(json.dumps(ft))
+                shape = list(ft.get("shape") or [])
+                if shape and isinstance(shape[0], int):
+                    ft["shape"] = [len(keep)] + shape[1:]
+                names = ft.get("names")
+                if isinstance(names, list):
+                    ft["names"] = [names[i] for i in keep]
         new_features[new_key] = ft
     info["features"] = new_features
     if total_frames is not None:
@@ -342,6 +504,30 @@ def rewrite_stats_json(src: Path, dst: Path, total_frames: int | None = None) ->
         for key, value in list(new_stats.items()):
             if key.endswith("/count"):
                 new_stats[key] = _replace_count_leaves(value, total_frames)
+
+    # Slice per-axis stats for the affected state/action features. Each
+    # entry is a dict like ``{"min": [...], "max": [...], ...}`` with one
+    # value per dimension; we keep only the indices that survived the
+    # arm filter. Non-list / wrong-length values are passed through so we
+    # don't corrupt scalar entries (e.g. legacy stats with a single count).
+    if ARM_KEEP_INDICES:
+        for feature_key, keep in ARM_KEEP_INDICES.items():
+            entry = new_stats.get(feature_key)
+            if not isinstance(entry, dict):
+                continue
+            orig_dim = ARM_ORIG_DIMS.get(feature_key)
+            sliced_entry: dict[str, object] = {}
+            for stat_name, value in entry.items():
+                if (
+                    isinstance(value, list)
+                    and orig_dim is not None
+                    and len(value) == orig_dim
+                ):
+                    sliced_entry[stat_name] = [value[i] for i in keep]
+                else:
+                    sliced_entry[stat_name] = value
+            new_stats[feature_key] = sliced_entry
+
     (dst / "meta" / "stats.json").write_text(json.dumps(new_stats, indent=4))
 
 
@@ -389,6 +575,33 @@ def rewrite_episodes_parquet(
         frame = table.to_pandas()
         frame = frame.rename(columns=rename_in_string)
 
+        # Slice per-episode stats columns for state/action down to the
+        # surviving arm indices. Columns are list-typed (variable length)
+        # in the source schema, so we don't need to rebuild the schema —
+        # rewriting shorter lists into the same field type is allowed.
+        if ARM_KEEP_INDICES:
+            for col in list(frame.columns):
+                match = _EPISODE_STATE_ACTION_COL_RE.match(col)
+                if match is None:
+                    continue
+                feature_key = match.group("feature")
+                keep = ARM_KEEP_INDICES.get(feature_key)
+                orig_dim = ARM_ORIG_DIMS.get(feature_key)
+                if keep is None or orig_dim is None:
+                    continue
+
+                def _slice_row(value, keep=keep, orig_dim=orig_dim):
+                    if value is None:
+                        return value
+                    seq = list(value)
+                    if len(seq) != orig_dim:
+                        # Unexpected per-row length — leave it alone so we
+                        # don't silently corrupt the file.
+                        return seq
+                    return [seq[i] for i in keep]
+
+                frame[col] = frame[col].apply(_slice_row)
+
         if deleted_episodes and "episode_index" in frame.columns:
             frame = frame.loc[~frame["episode_index"].isin(deleted_episodes)].copy()
 
@@ -427,6 +640,13 @@ def rewrite_episodes_parquet(
 
 
 def copy_data_parquets(src: Path, dst: Path) -> None:
+    """Mirror ``data/`` parquets to the destination, slicing arms if requested.
+
+    With no ``--exclude-arms`` filter active, this is the original ``copy2``
+    fast path. Otherwise we read each parquet, slice the
+    ``observation.state`` / ``action`` columns, and rewrite — the data layout
+    is otherwise unchanged.
+    """
     src_dir = src / "data"
     if not src_dir.exists():
         return
@@ -434,7 +654,12 @@ def copy_data_parquets(src: Path, dst: Path) -> None:
         rel = p.relative_to(src)
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, out)
+        if ARM_KEEP_INDICES:
+            table = pq.read_table(p)
+            table = _slice_table_state_action(table, ARM_KEEP_INDICES)
+            pq.write_table(table, out)
+        else:
+            shutil.copy2(p, out)
 
 
 def copy_tasks(src: Path, dst: Path) -> None:
@@ -485,11 +710,57 @@ def downsample_videos(src: Path, dst: Path, downsample: int) -> None:
             subprocess.run(cmd, check=True)
 
 
+def write_experiment_config(src: Path, dst: Path) -> None:
+    """Copy ``experiment_config.yaml``, dropping any excluded arm block.
+
+    With no ``--exclude-arms`` filter active this is a straight ``copy2``.
+    Otherwise we parse the YAML, drop any top-level mapping whose key
+    matches an excluded prefix (e.g. ``left_arm`` for ``--exclude-arms left``),
+    and write the filtered version. Keeping the destination's
+    ``experiment_config.yaml`` consistent with the new state/action
+    dimensionality means downstream tools (``record.py``, ``deploy.py``,
+    ``app.py``) won't reference a phantom arm.
+    """
+    p = src / "experiment_config.yaml"
+    if not p.exists():
+        return
+    out = dst / "experiment_config.yaml"
+    if not EXCLUDED_ARM_PREFIXES:
+        shutil.copy2(p, out)
+        return
+
+    text = p.read_text()
+    try:
+        cfg = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        print(
+            f"[warn] could not parse {p} ({exc}); copying unchanged so "
+            "experiment_config is at least preserved."
+        )
+        shutil.copy2(p, out)
+        return
+
+    if not isinstance(cfg, dict):
+        shutil.copy2(p, out)
+        return
+
+    removed: list[str] = []
+    for key in list(cfg.keys()):
+        if isinstance(key, str) and _arm_prefix_matches(key, EXCLUDED_ARM_PREFIXES):
+            removed.append(key)
+            cfg.pop(key)
+    if removed:
+        print(f"[info] experiment_config.yaml: removed top-level key(s) {removed}")
+
+    out.write_text(yaml.safe_dump(cfg, sort_keys=False))
+
+
 def copy_extras(src: Path, dst: Path) -> None:
-    for name in ("experiment_config.yaml", "recording_config.yaml", "README.md"):
+    for name in ("recording_config.yaml", "README.md"):
         p = src / name
         if p.exists():
             shutil.copy2(p, dst / name)
+    write_experiment_config(src, dst)
 
 
 def clean_destination(dst: Path) -> None:
@@ -545,6 +816,20 @@ def main():
             "after the camera_NN_ prefix has been stripped."
         ),
     )
+    ap.add_argument(
+        "--exclude-arms",
+        nargs="+",
+        default=[],
+        metavar="PREFIX",
+        help=(
+            "Joint-name prefixes whose dimensions are removed from "
+            "observation.state and action (e.g. --exclude-arms left to keep "
+            "only the right arm). Matched case-insensitively against the "
+            "`names` listed in info.json; trailing underscores on the prefix "
+            "are ignored. The matching top-level block in "
+            "experiment_config.yaml is also stripped from the destination."
+        ),
+    )
     args = ap.parse_args()
 
     src, dst = args.src.resolve(), args.dst.resolve()
@@ -560,9 +845,30 @@ def main():
     # Auto-derive the camera rename map from the source dataset, dropping any
     # cameras the user excluded on the CLI. KEY_MAP and EXCLUDED_CAMERAS are
     # module-level so the helper functions above pick them up.
-    global KEY_MAP, EXCLUDED_CAMERAS
+    global KEY_MAP, EXCLUDED_CAMERAS, EXCLUDED_ARM_PREFIXES, ARM_KEEP_INDICES, ARM_ORIG_DIMS
     EXCLUDED_CAMERAS = {str(name).strip() for name in args.exclude_cameras if str(name).strip()}
     KEY_MAP = derive_key_map(src, exclude=EXCLUDED_CAMERAS)
+
+    EXCLUDED_ARM_PREFIXES = {
+        str(p).strip() for p in args.exclude_arms if str(p).strip()
+    }
+    ARM_KEEP_INDICES, ARM_ORIG_DIMS = derive_arm_indices(src, EXCLUDED_ARM_PREFIXES)
+
+    if EXCLUDED_ARM_PREFIXES:
+        src_features = source_info.get("features") or {}
+        print(f"[info] --exclude-arms = {sorted(EXCLUDED_ARM_PREFIXES)}")
+        for feature_key in STATE_ACTION_KEYS:
+            keep = ARM_KEEP_INDICES.get(feature_key)
+            ft = src_features.get(feature_key) or {}
+            names = ft.get("names") or []
+            if keep is None or not names:
+                continue
+            kept_set = set(keep)
+            dropped = [str(n) for i, n in enumerate(names) if i not in kept_set]
+            print(
+                f"[info] {feature_key}: dropping {len(dropped)} joint(s) "
+                f"({', '.join(dropped)}); shape {len(names)} -> {len(keep)}"
+            )
 
     print(
         f"[info] src={src}\n[info] dst={dst}\n[info] downsample={args.downsample}x\n"

@@ -125,10 +125,12 @@ from lerobot_ros2.cli.deploy import (
     _load_policy_type,
     _policy_visual_size,
     _resolve_arm_keys,
+    detect_per_camera_crops,
     detect_training_resize,
     resolve_experiment_config_path,
     resolve_recording_config_path,
 )
+from lerobot_ros2.preprocessing import apply_per_camera_crop
 
 try:
     import rclpy
@@ -183,6 +185,7 @@ class DaggerState:
         self._save_discard: bool = False
         self._last_toggle_time = 0.0
         self._is_resetting = False
+        self._capture_paused = False
         self._transient_label: Optional[str] = None
         self._transient_until: float = 0.0
         self.policy_publish_enabled = threading.Event()
@@ -232,6 +235,15 @@ class DaggerState:
     def set_resetting(self, value: bool) -> None:
         with self._lock:
             self._is_resetting = value
+
+    @property
+    def is_capture_paused(self) -> bool:
+        with self._lock:
+            return self._capture_paused
+
+    def set_capture_paused(self, value: bool) -> None:
+        with self._lock:
+            self._capture_paused = value
 
     # ----- phase transitions --------------------------------------------
 
@@ -702,6 +714,13 @@ def main() -> None:
             policy_visual_size[0], policy_visual_size[1],
         )
 
+    per_camera_crops = detect_per_camera_crops(args.policy)
+    if per_camera_crops:
+        logging.info(
+            "Auto-detected per-camera crops from train_config.json: %s",
+            per_camera_crops,
+        )
+
     # ── Cameras ──────────────────────────────────────────────────────────
     logging.info("Opening configured cameras...")
     try:
@@ -1016,9 +1035,18 @@ def main() -> None:
                 # so the first teleop frame we record actually comes from
                 # GELLO. The main loop will flush the prebuffer (captured
                 # during POLICY_ROLLOUT) as soon as phase == TELEOP.
+                # Pause capture across the transition (mirrors the pedal-3
+                # cycle path) so the few-hundred-ms wait_for_resume window
+                # doesn't leak stationary frames into the saved episode.
                 dagger_state.begin_teleop(label=source)
-                control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=source)
-                transition_ready_client.wait_for_resume(label=source)
+                dagger_state.set_capture_paused(True)
+                logging.info("[%s] capture PAUSED for handover transition", source)
+                try:
+                    control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=source)
+                    transition_ready_client.wait_for_resume(label=source)
+                finally:
+                    dagger_state.set_capture_paused(False)
+                    logging.info("[%s] capture RESUMED after handover transition", source)
             elif phase == Phase.TELEOP_CORRECTION:
                 # End: flip phase to SAVING so the recording thread persists
                 # what it has, then put GELLO back to IDLE.
@@ -1247,6 +1275,10 @@ def main() -> None:
     def _submit_cycle_mode(source: str) -> None:
         nonlocal mode_cycle_pending, mode_cycle_worker_running
 
+        if dagger_state.is_recording:
+            dagger_state.set_capture_paused(True)
+            logging.info("[%s] capture PAUSED for mode cycle", source)
+
         with mode_cycle_lock:
             mode_cycle_pending += 1
             should_start_worker = not mode_cycle_worker_running
@@ -1264,6 +1296,7 @@ def main() -> None:
     def _cycle_mode_with_pause(source: str) -> None:
         nonlocal mode_cycle_pending, mode_cycle_worker_running
 
+        transition_confirmed = True
         try:
             while True:
                 with mode_cycle_lock:
@@ -1273,10 +1306,21 @@ def main() -> None:
 
                 next_mode = GelloControlModeClient.cycle_mode(control_mode_client.mode)
                 control_mode_client.set_mode(next_mode, label=source)
-                transition_ready_client.wait_for_resume(label=source)
+                transition_confirmed = transition_ready_client.wait_for_resume(label=source)
+                if not transition_confirmed:
+                    logging.warning(
+                        "[%s] Transition completion not confirmed; keeping capture paused",
+                        source,
+                    )
+                    break
         finally:
             with mode_cycle_lock:
                 mode_cycle_worker_running = False
+                queued_left = mode_cycle_pending
+
+            if transition_confirmed and queued_left == 0:
+                dagger_state.set_capture_paused(False)
+                logging.info("[%s] capture RESUMED after mode cycle", source)
 
     # Optional service so external scripts can force a reset (matches record.py).
     reset_return_service = None
@@ -1333,6 +1377,10 @@ def main() -> None:
                 tensor = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
                 if resize_transform is not None:
                     tensor = resize_transform(tensor)
+                if per_camera_crops:
+                    tensor = apply_per_camera_crop(
+                        tensor, policy_key, per_camera_crops
+                    )
                 policy_images[policy_key] = tensor
         return dataset_images, policy_images, all_ok
 
@@ -1661,7 +1709,8 @@ def main() -> None:
                     }
                     for k, v in dataset_images.items():
                         frame_dict[k] = v
-                    prebuffer.push(frame_dict)
+                    if not dagger_state.is_capture_paused:
+                        prebuffer.push(frame_dict)
 
                     step_count += 1
                     if step_count % 100 == 0:
@@ -1698,14 +1747,15 @@ def main() -> None:
                     }
                     for k, v in dataset_images.items():
                         frame_dict[k] = v
-                    try:
-                        dataset.add_frame(frame_dict)
-                        teleop_frames_in_episode += 1
-                    except Exception:
-                        logging.exception("Failed to add teleop frame; dropping episode")
-                        dataset.clear_episode_buffer()
-                        dagger_state.discard(label="recorder")
-                        teleop_frames_in_episode = 0
+                    if not dagger_state.is_capture_paused:
+                        try:
+                            dataset.add_frame(frame_dict)
+                            teleop_frames_in_episode += 1
+                        except Exception:
+                            logging.exception("Failed to add teleop frame; dropping episode")
+                            dataset.clear_episode_buffer()
+                            dagger_state.discard(label="recorder")
+                            teleop_frames_in_episode = 0
 
                 # 4. Rendering.
                 if preview is not None:

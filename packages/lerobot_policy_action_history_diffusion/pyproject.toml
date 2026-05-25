@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_policy_action_history_diffusion"
+version = "0.1.0"
+description = "LeRobot third-party policy plugin: DiffusionPolicy conditioned on a queue of prior actions (no extra obs)."
+requires-python = ">=3.10"
+# lerobot is assumed to be installed separately (editable) in the same env;
+# we deliberately don't declare it here to avoid pulling a PyPI version over it.
+dependencies = []
+
+[project.entry-points."lerobot.policies"]
+action_history_diffusion = "lerobot_policy_action_history_diffusion.configuration_action_history_diffusion:ActionHistoryDiffusionConfig"
+
+[tool.setuptools.packages.find]
+where = ["src"]

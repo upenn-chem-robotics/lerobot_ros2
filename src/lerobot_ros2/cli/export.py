@@ -10,7 +10,7 @@ more items than that, additional files are generated automatically.
 
 Example:
 
-    lerobot-ros-export --dataset-dir data/mattia/baseline
+    lerobot-ros-export --dataset-dir data/rama/pour
 """
 
 from __future__ import annotations
