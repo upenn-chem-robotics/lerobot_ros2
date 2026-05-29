@@ -990,6 +990,12 @@ def main() -> None:
         # leaves the robot holding its current pose).
         if running_event.is_set():
             running_event.clear()
+            # Finalize the current grid mp4 immediately so the file on disk
+            # ends at the stop press instead of trailing on with idle frames
+            # until the next rollout starts. _record_frames is also gated on
+            # running_event below, so per-camera writers stop receiving
+            # frames at the same instant.
+            _close_episode_grid_writer()
             logging.info("STOPPED — press SPACE to start next rollout")
         else:
             _start_new_episode()
@@ -1003,6 +1009,13 @@ def main() -> None:
 
     def _record_frames(frames: List[Optional[np.ndarray]]) -> None:
         nonlocal grid_frame_count
+        # Only record while a rollout is actively running. Previously the
+        # per-camera mp4s and the grid mp4 kept accepting frames in the
+        # interval between SPACE-stop and SPACE-start (and during the
+        # homing transition), which padded each deployment with idle
+        # footage. Gating here makes recording match policy execution.
+        if not running_event.is_set():
+            return
         if not video_writers and grid_writer is None:
             return
         for cam, frame in zip(cameras, frames):

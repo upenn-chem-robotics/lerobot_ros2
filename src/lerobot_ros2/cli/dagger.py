@@ -153,6 +153,20 @@ from lerobot.policies.factory import make_pre_post_processors
 
 from lerobot_ros2.strided_history import StridedHistoryRunner, load_strided_config
 
+# Importing the plugin registers ``action_history_diffusion`` as a known policy
+# type so checkpoints saved with that ``type`` field can be loaded below. The
+# import is wrapped in try/except so dagger.py still works in environments
+# where the plugin isn't installed (those just can't load action-history
+# checkpoints, but stock diffusion / ACT keep working). Mirrors deploy.py.
+try:
+    from lerobot_policy_action_history_diffusion import (
+        ActionHistoryDiffusionPolicy,
+    )
+    _ACTION_HISTORY_AVAILABLE = True
+except ImportError:
+    ActionHistoryDiffusionPolicy = None  # type: ignore[assignment]
+    _ACTION_HISTORY_AVAILABLE = False
+
 
 # ── Phase state ───────────────────────────────────────────────────────────
 
@@ -486,7 +500,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="auto",
         choices=("auto", "act", "dp"),
-        help="Force a deploy path. Use dp for DiffusionPolicy checkpoints.",
+        help=(
+            "Force a deploy path. Use dp for DiffusionPolicy (and "
+            "action_history_diffusion) checkpoints. Default 'auto' reads "
+            "config.json and dispatches automatically."
+        ),
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--left", action="store_true", help="Left arm only.")
@@ -651,18 +669,32 @@ def main() -> None:
     # ── Load policy (mirrors deploy.py) ─────────────────────────────────
     logging.info("Loading policy from %s...", args.policy)
     policy_type = _load_policy_type(args.policy, args.deploy_mode)
-    if policy_type == "diffusion":
+    if policy_type == "action_history_diffusion":
+        if not _ACTION_HISTORY_AVAILABLE:
+            raise RuntimeError(
+                "Checkpoint declares type=action_history_diffusion but the "
+                "lerobot_policy_action_history_diffusion plugin is not installed "
+                "in this environment. Install it with "
+                "`pip install -e packages/lerobot_policy_action_history_diffusion`."
+            )
+        policy = ActionHistoryDiffusionPolicy.from_pretrained(args.policy)
+    elif policy_type == "diffusion":
         policy = DiffusionPolicy.from_pretrained(args.policy)
     else:
         policy = ACTPolicy.from_pretrained(args.policy)
     policy.config.device = device
     policy.to(device)
     policy.eval()
-    if policy_type == "diffusion" and hasattr(policy, "reset"):
+    # Both DiffusionPolicy and its action_history subclass need their queues
+    # primed via reset() before the first select_action() call.
+    if policy_type in ("diffusion", "action_history_diffusion") and hasattr(policy, "reset"):
         policy.reset()
 
     strided_cfg = None
     strided_runner: Optional[StridedHistoryRunner] = None
+    # action_history_diffusion has its own past-action queue layer inside the
+    # policy, so it does NOT use StridedHistoryRunner -- the two extensions are
+    # independent. Mirrors deploy.py.
     if policy_type == "diffusion":
         strided_cfg = load_strided_config(args.policy)
         if strided_cfg is not None:
@@ -942,7 +974,7 @@ def main() -> None:
         )
 
     expected_action_dim = sum(len(home_joint_names[key]) for key in arm_keys)
-    if policy_type == "diffusion" and expected_state_dim is not None and expected_state_dim != expected_action_dim:
+    if policy_type in ("diffusion", "action_history_diffusion") and expected_state_dim is not None and expected_state_dim != expected_action_dim:
         logging.warning(
             "Policy expects a %s-D state/action, but the configured arms expose %s joints.",
             expected_state_dim, expected_action_dim,
@@ -1009,6 +1041,31 @@ def main() -> None:
         wrap_manager.reset_episode()
         main_stabilizer.reset()
 
+    def _bounded_wait_for_resume(label: str, timeout_s: float = 5.0) -> bool:
+        done = threading.Event()
+        result_holder = [False]
+
+        def _waiter() -> None:
+            try:
+                result_holder[0] = transition_ready_client.wait_for_resume(label=label)
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=_waiter,
+            name=f"transition-wait-{label}",
+            daemon=True,
+        ).start()
+        if not done.wait(timeout=timeout_s):
+            logging.warning(
+                "[%s] transition-ready ack did not arrive within %.1fs; "
+                "continuing handover anyway.",
+                label,
+                timeout_s,
+            )
+            return False
+        return result_holder[0]
+
     def _submit_phase_toggle(source: str) -> None:
         """Pedal 1 / key 's': cycle IDLE → POLICY → FROZEN → TELEOP → (save) → IDLE."""
         def _action() -> None:
@@ -1035,18 +1092,30 @@ def main() -> None:
                 # so the first teleop frame we record actually comes from
                 # GELLO. The main loop will flush the prebuffer (captured
                 # during POLICY_ROLLOUT) as soon as phase == TELEOP.
-                # Pause capture across the transition (mirrors the pedal-3
-                # cycle path) so the few-hundred-ms wait_for_resume window
-                # doesn't leak stationary frames into the saved episode.
-                dagger_state.begin_teleop(label=source)
+                # Pause capture across the transition; run set_mode +
+                # wait_for_resume in a background thread so the command
+                # executor lock is not held (otherwise pedal-4 save presses
+                # are dropped until the ack arrives).
+                if not dagger_state.begin_teleop(label=source):
+                    return
                 dagger_state.set_capture_paused(True)
                 logging.info("[%s] capture PAUSED for handover transition", source)
-                try:
-                    control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=source)
-                    transition_ready_client.wait_for_resume(label=source)
-                finally:
-                    dagger_state.set_capture_paused(False)
-                    logging.info("[%s] capture RESUMED after handover transition", source)
+
+                def _handover_worker() -> None:
+                    try:
+                        control_mode_client.set_mode(
+                            GelloControlModeClient.MODE_NORMAL, label=source,
+                        )
+                        _bounded_wait_for_resume(label=source, timeout_s=5.0)
+                    finally:
+                        dagger_state.set_capture_paused(False)
+                        logging.info("[%s] capture RESUMED after handover transition", source)
+
+                threading.Thread(
+                    target=_handover_worker,
+                    name=f"dagger-handover-{source}",
+                    daemon=True,
+                ).start()
             elif phase == Phase.TELEOP_CORRECTION:
                 # End: flip phase to SAVING so the recording thread persists
                 # what it has, then put GELLO back to IDLE.
@@ -1663,7 +1732,7 @@ def main() -> None:
                         logging.error("Missing policy observation images: %s", missing)
                         time.sleep(0.05)
                         continue
-                    if policy_type == "diffusion":
+                    if policy_type in ("diffusion", "action_history_diffusion"):
                         observation = {k: observation[k] for k in (image_feature_keys + ["observation.state"])}
 
                     processed_obs = preprocessor(observation)
