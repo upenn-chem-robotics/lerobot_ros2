@@ -24,6 +24,7 @@ dependencies = [
     "gradio",
     "pytz",
     "pyarrow",
+    "huggingface_hub>=0.26",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,8 @@ lerobot-ros-probe-cameras = "lerobot_ros2.cli.probe_cameras:main"
 lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
 lerobot-ros-app = "lerobot_ros2.cli.app:main"
 lerobot-ros-train-dagger = "lerobot_ros2.cli.train_dagger:main"
+lerobot-ros-train = "lerobot_ros2.cli.train:main"
+lerobot-ros-backup = "lerobot_ros2.cli.backup:main"
 lerobot-ros-preview-aug = "lerobot_ros2.cli.preview_aug:main"
 lerobot-ros-preview-episode = "lerobot_ros2.cli.preview_episode:main"
 lerobot-ros-add-action-source = "lerobot_ros2.cli.add_action_source_to_base:main"

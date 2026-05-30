@@ -1,0 +1,60 @@
+# Hugging Face backup configuration.
+#
+# Strategy: "raw mirror". Each local experiment folder under ``data/`` is
+# uploaded verbatim (its internal meta/ data/ videos/ deploy/ tree preserved)
+# into its own *private* HF *dataset* repo, so old folders can be deleted
+# locally and restored later with ``hf download``.
+#
+# Used by:
+#   - ``lerobot-ros-backup``                (one-time bulk backup + verify)
+#   - automatic post-run sync in record / dagger / train CLIs
+#
+# A local path is mapped to (repo, path_in_repo) like so:
+#   1. If it matches (or is inside) one of the ``backup_targets`` ``local``
+#      roots, that target's repo is used and ``path_in_repo`` is the remainder.
+#   2. Otherwise the default rule applies (see ``nested_roots`` below).
+
+hf_user: RamaE
+repo_prefix: lerobot-data
+repo_type: dataset
+private: true
+
+# All local paths are interpreted relative to this (relative to the repo root).
+data_root: data
+
+# Default mapping rule for paths not covered by ``backup_targets``:
+#   - if the first path component (under data_root) is in ``nested_roots`` and
+#     there are >= 2 components, the repo root is the first TWO components
+#     (operator/task)  ->  <repo_prefix>-<op>-<task>
+#   - otherwise the repo root is the FIRST component
+#     (e.g. a fresh ``data/<name>`` recording)  ->  <repo_prefix>-<name>
+# ``path_in_repo`` is whatever is left after the repo-root components.
+nested_roots:
+  - rama
+  - smrithi
+
+# Canonical set mirrored by ``lerobot-ros-backup --all``. One private dataset
+# repo per experiment folder. Sizes are approximate (2026-05-29).
+backup_targets:
+  - local: data/rama/dose_solid                       # ~54G
+    repo: lerobot-data-rama-dose_solid
+  - local: data/rama/funnel_insert_reactor            # ~76G
+    repo: lerobot-data-rama-funnel_insert_reactor
+  - local: data/rama/liquid_pouring                   # ~162G
+    repo: lerobot-data-rama-liquid_pouring
+  - local: data/rama/scope_teleoperation_feasibility  # ~42G
+    repo: lerobot-data-rama-scope_teleoperation_feasibility
+  - local: data/rama/septum_insert_reactor            # ~152G
+    repo: lerobot-data-rama-septum_insert_reactor
+  - local: data/rama/stir_bar                         # ~26G
+    repo: lerobot-data-rama-stir_bar
+  - local: data/smrithi/bimanual_pick_20260525        # ~91G
+    repo: lerobot-data-smrithi-bimanual_pick_20260525
+  - local: data/smrithi/needle_20260528               # ~2.4G
+    repo: lerobot-data-smrithi-needle_20260528
+  - local: data/smrithi/pick_vial_20260524            # ~20G
+    repo: lerobot-data-smrithi-pick_vial_20260524
+  - local: data/dagger                                # ~1.3G
+    repo: lerobot-data-dagger
+  - local: data/todolist                              # ~214M
+    repo: lerobot-data-todolist

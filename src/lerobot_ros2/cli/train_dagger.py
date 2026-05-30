@@ -54,6 +54,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.utils.import_utils import register_third_party_plugins
 
+from lerobot_ros2.hub_sync import pop_no_push_flag, try_sync_to_hub
 from lerobot_ros2.training.action_source_sampler import (
     ActionSourceAwareEpisodeSampler,
     WeightedDaggerEpisodeSampler,
@@ -151,6 +152,9 @@ def _compute_is_dagger_per_frame(
 # Closed over by _BoundSampler / _BoundWeightedSampler below.
 _DAGGER_FRACTION: float | None = None
 
+# Set in main() from a popped --no-push flag (None => default/env decides).
+_PUSH: bool | None = None
+
 
 @parser.wrap()
 def train_dagger(cfg: TrainPipelineConfig) -> None:
@@ -238,9 +242,14 @@ def train_dagger(cfg: TrainPipelineConfig) -> None:
     finally:
         _lt.EpisodeAwareSampler = _orig
 
+    # Mirror the checkpoints (output_dir) to Hugging Face. Best-effort: never
+    # fails the run. Disable with --no-push or LEROBOT_HF_PUSH=0.
+    try_sync_to_hub(cfg.output_dir, push=_PUSH)
+
 
 def main() -> None:
-    global _DAGGER_FRACTION
+    global _DAGGER_FRACTION, _PUSH
+    _PUSH = False if pop_no_push_flag(sys.argv) else None
     _DAGGER_FRACTION = _pop_dagger_fraction_from_argv(sys.argv)
     register_third_party_plugins()
     train_dagger()

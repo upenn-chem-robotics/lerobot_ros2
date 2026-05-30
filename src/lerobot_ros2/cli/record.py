@@ -61,6 +61,7 @@ import yaml
 os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
 
 from lerobot_ros2.config_paths import resolve_config_path
+from lerobot_ros2.hub_sync import try_sync_to_hub
 from lerobot_ros2.helper import (
     ArmState,
     CameraReader,
@@ -897,6 +898,12 @@ def parse_args() -> argparse.Namespace:
         metavar="MAE",
         help="Override MAE gap (normal vs flipped) for all cameras; default from config or 20.",
     )
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Do not mirror the recorded dataset to Hugging Face when done "
+             "(default: push, per config/hf_backup.yaml; or set LEROBOT_HF_PUSH=0).",
+    )
     return parser.parse_args()
 
 
@@ -1570,6 +1577,11 @@ def main() -> None:
             logging.info("Shutdown complete")
         finally:
             teardown_watchdog.cancel()
+
+        # ── Mirror the finished dataset to Hugging Face (best-effort) ──────
+        # Runs after ROS/camera teardown so the upload can't interfere with
+        # shutdown. Never raises; disable with --no-push or LEROBOT_HF_PUSH=0.
+        try_sync_to_hub(root, push=not args.no_push)
 
 
 if __name__ == "__main__":

@@ -67,3 +67,74 @@ your config lives.
 | `lerobot-ros-probe-cameras` | Snapshot v4l2 controls per camera     |
 | `lerobot-ros-downsample` | Rewrite + downsample a LeRobot v3 dataset |
 | `lerobot-ros-app`      | Gradio dataset visualizer                   |
+| `lerobot-ros-train`    | `lerobot-train` + auto-mirror checkpoints to HF |
+| `lerobot-ros-train-dagger` | DAgger-aware training + auto-mirror to HF |
+| `lerobot-ros-backup`   | Mirror / verify `data/` folders on Hugging Face |
+
+## Hugging Face backup
+
+Everything under `data/` (recorded datasets and training checkpoints) can be
+mirrored to **private** Hugging Face *dataset* repos so old folders can be
+deleted locally and restored later. The strategy is a **raw mirror**: each
+experiment folder is uploaded verbatim (its `meta/ data/ videos/ deploy/` tree
+preserved) into its own repo. The mapping lives in
+[`config/hf_backup.yaml`](config/hf_backup.yaml).
+
+### One-time setup
+
+```bash
+# 1. Create a HF account + a *Write* token at huggingface.co/settings/tokens
+# 2. Authenticate this machine once:
+hf auth login            # or: export HF_TOKEN=hf_xxx
+```
+
+Note: `data/` is large (hundreds of GB). Private storage on Hugging Face is
+metered, so this likely requires an HF PRO plan. Edit `hf_user` /
+`backup_targets` in `config/hf_backup.yaml` if your username or folder layout
+changes.
+
+### Back up existing data
+
+```bash
+# Mirror every folder listed in config/hf_backup.yaml (resumable; safe to re-run):
+lerobot-ros-backup --all
+
+# Or a single folder:
+lerobot-ros-backup data/rama/dose_solid
+
+# Preview the repo mapping without uploading:
+lerobot-ros-backup --all --dry-run
+```
+
+### Verify, then delete locally
+
+```bash
+# Confirm a repo holds every local file before you remove the folder:
+lerobot-ros-backup --verify data/rama/dose_solid
+# Only after [OK]:
+rm -rf data/rama/dose_solid
+```
+
+### Automatic upload going forward
+
+`lerobot-ros-record`, `lerobot-ros-dagger`, `lerobot-ros-train` and
+`lerobot-ros-train-dagger` automatically mirror their output folder to the
+matching repo when they finish. The push is best-effort (it never fails the
+run; on error it prints the `lerobot-ros-backup ...` command to retry).
+
+- Skip a single run with `--no-push`.
+- Disable globally with `LEROBOT_HF_PUSH=0`.
+- For training auto-backup to work, point `--output_dir` somewhere under
+  `data/` (e.g. `--output_dir=data/<op>/<task>/.../deploy`). Plain upstream
+  `lerobot-train` does **not** auto-push; use `lerobot-ros-train` (same flags)
+  or run `lerobot-ros-backup <output_dir>` afterwards.
+
+### Restore a deleted folder
+
+```bash
+hf download RamaE/lerobot-data-rama-dose_solid \
+  --repo-type dataset --local-dir data/rama/dose_solid
+```
+
+Restored datasets keep `meta/info.json` etc. intact and work with LeRobot as
+before.

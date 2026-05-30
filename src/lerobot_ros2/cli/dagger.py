@@ -74,6 +74,7 @@ from torchvision.transforms import v2 as transforms_v2
 os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
 
 from lerobot_ros2.config_paths import resolve_config_path
+from lerobot_ros2.hub_sync import try_sync_to_hub
 from lerobot_ros2.helper import (
     EVDEV_AVAILABLE,
     ArmState,
@@ -576,6 +577,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="MAE",
         help="Override MAE gap (normal vs flipped) for all cameras.",
+    )
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Do not mirror the dagger dataset to Hugging Face when done "
+             "(default: push, per config/hf_backup.yaml; or set LEROBOT_HF_PUSH=0).",
     )
     return parser.parse_args()
 
@@ -1887,6 +1894,10 @@ def main() -> None:
 
         node.destroy_node()
         rclpy.try_shutdown()
+
+    # ── Mirror the finished dagger dataset to Hugging Face (best-effort) ──
+    # Never raises; disable with --no-push or LEROBOT_HF_PUSH=0.
+    try_sync_to_hub(root, push=not args.no_push)
 
 
 if __name__ == "__main__":
