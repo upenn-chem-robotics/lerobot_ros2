@@ -391,8 +391,13 @@ def _render_episode(
     upscale: int,
     y_max: float = 0.5,
     joint_names: list[str] | None = None,
+    drop_plateau: bool = False,
 ) -> int:
-    """Render one episode to ``out_path``. Returns number of frames written."""
+    """Render one episode to ``out_path``. Returns number of frames written.
+
+    When ``drop_plateau`` is set, frames classified as plateau (no motion)
+    are skipped entirely so the output video shows only the moving frames.
+    """
     ep_mask = ep_idx_all == int(episode_index)
     ep_positions = np.flatnonzero(ep_mask)
     if ep_positions.size == 0:
@@ -456,11 +461,14 @@ def _render_episode(
     n_plateau_frames = int((classes == 1).sum())
     n_existing_drop = int((classes == 2).sum())
 
+    written = 0
     try:
         for i in range(expected_n):
+            cls = int(classes[i])
+            if drop_plateau and cls == 1:
+                continue
             tiles = [decoded[c][i] for c in cam_keys]
             top = _tile_horizontally(tiles)
-            cls = int(classes[i])
             speed_i = float(ep_speed[i]) if i < ep_speed.size else 0.0
             status_color = color_for_class[cls]
             lines = [
@@ -483,9 +491,10 @@ def _render_episode(
             if up > 1:
                 canvas = cv2.resize(canvas, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
             writer.write(np.ascontiguousarray(canvas))
+            written += 1
     finally:
         writer.release()
-    return expected_n
+    return written
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -508,6 +517,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Optional comma-separated joint indices to consider.")
     p.add_argument("--upscale", type=int, default=2,
                    help="Nearest-neighbour upscale of the output video (default: 2).")
+    p.add_argument("--drop-plateau", action="store_true",
+                   help=(
+                       "Skip plateau (zero-motion) frames in the output video so "
+                       "only the moving frames remain. The bottom strips/plots still "
+                       "show the full episode for reference."
+                   ))
     p.add_argument("--y-max", type=float, default=0.005,
                    help=(
                        "Fixed y-axis upper bound for the s_t plot (default: 0.5). "
@@ -592,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
             upscale=args.upscale,
             y_max=float(args.y_max),
             joint_names=joint_names or None,
+            drop_plateau=args.drop_plateau,
         )
         logging.info("  wrote %d frames", n)
 

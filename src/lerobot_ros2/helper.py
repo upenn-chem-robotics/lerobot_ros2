@@ -1137,6 +1137,7 @@ class FootPedalThread(threading.Thread):
         on_toggle: Callable[[], None],
         on_discard: Callable[[], None],
         on_reset: Callable[[], None],
+        debounce_s: float = 0.3,
     ) -> None:
         super().__init__(daemon=True, name="foot-pedal")
         self.device_path = device_path
@@ -1144,6 +1145,15 @@ class FootPedalThread(threading.Thread):
         self._on_toggle = on_toggle
         self._on_discard = on_discard
         self._on_reset = on_reset
+        # Composite USB pedals expose several evdev nodes (e.g. event-if00 +
+        # event-if01, or separate Keyboard/Mouse endpoints). A single physical
+        # press emits the SAME key on multiple nodes, so without debouncing one
+        # press dispatches the action 2-3 times — which can start then
+        # immediately stop recording, or leave GELLO in NORMAL with no episode
+        # being recorded. Collapse repeats of the same action within this
+        # window into a single dispatch.
+        self._debounce_s = max(float(debounce_s), 0.0)
+        self._last_dispatch: Dict[str, float] = {}
 
     def run(self) -> None:
         paths = resolve_pedal_evdev_paths(self.device_path)
@@ -1218,6 +1228,15 @@ class FootPedalThread(threading.Thread):
                     pass
 
     def _dispatch(self, action: str | None) -> None:
+        if action is None:
+            return
+        if self._debounce_s > 0.0:
+            now = time.monotonic()
+            last = self._last_dispatch.get(action)
+            if last is not None and (now - last) < self._debounce_s:
+                # Duplicate event from another node of the same pedal; ignore.
+                return
+            self._last_dispatch[action] = now
         if action == "toggle":
             self._on_toggle()
         elif action == "discard":

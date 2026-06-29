@@ -30,7 +30,44 @@ from .data_loader import ArmSpec, TeleopDataset
 
 _CAM_WIDTH = 640
 _MAX_COLS = 3
+# Order matters: H.264 first (plays in every desktop player *and* the
+# Chromium-based IDE preview). AV1/MPEG-4 are fallbacks only -- AV1 is
+# unreadable in many desktop players and MPEG-4 Part 2 is unreadable in
+# Chromium, so neither is a safe default.
 _PYAV_CODECS = ("libopenh264", "libsvtav1", "mpeg4")
+_H264_CODECS = {"libopenh264", "h264", "libx264"}
+# libopenh264 maxes out around H.264 level 5.2 (max ~9.4M luma samples and
+# 4096 px per side). Larger frames fail to open, so we downscale to fit.
+_H264_MAX_DIM = 4096
+_H264_MAX_LUMA = 9_437_184
+
+
+def _even(value: int) -> int:
+    """Round down to the nearest even integer (>= 2)."""
+    v = int(value)
+    return max(2, v - v % 2)
+
+
+def _fit_codec_dims(codec: str, width: int, height: int) -> tuple[int, int]:
+    """Return encoder-safe (even) dimensions for *codec*.
+
+    For H.264 encoders, clamp the resolution to libopenh264's limits while
+    preserving aspect ratio so an over-large composite still produces a
+    universally readable H.264 file instead of falling back to AV1.
+    """
+    w, h = int(width), int(height)
+    if codec in _H264_CODECS:
+        scale = 1.0
+        if w > _H264_MAX_DIM:
+            scale = min(scale, _H264_MAX_DIM / w)
+        if h > _H264_MAX_DIM:
+            scale = min(scale, _H264_MAX_DIM / h)
+        if w * h > _H264_MAX_LUMA:
+            scale = min(scale, (_H264_MAX_LUMA / (w * h)) ** 0.5)
+        if scale < 1.0:
+            w = int(w * scale)
+            h = int(h * scale)
+    return _even(w), _even(h)
 
 
 class _PyAvWriter:
@@ -42,8 +79,16 @@ class _PyAvWriter:
     ``h264_v4l2m2m`` hw encoder).
     """
 
+    _KNOWN_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
+
     def __init__(self, path: Path, width: int, height: int, fps: float, codec: str) -> None:
-        self._container = av.open(str(path), mode="w")
+        # When the output path has no (or an unknown) extension, libav cannot
+        # infer the container format and raises "Could not determine output
+        # format". Fall back to MP4 in that case so an extension-less --output
+        # still produces a valid file.
+        suffix = Path(path).suffix.lower()
+        container_format = None if suffix in self._KNOWN_SUFFIXES else "mp4"
+        self._container = av.open(str(path), mode="w", format=container_format)
         try:
             self._stream = self._container.add_stream(codec, rate=int(round(fps)))
             self._stream.width = int(width)
@@ -55,7 +100,13 @@ class _PyAvWriter:
             raise
 
     def write(self, bgr_frame: np.ndarray) -> None:
-        frame = av.VideoFrame.from_ndarray(bgr_frame, format="bgr24")
+        if bgr_frame.shape[1] != self._stream.width or bgr_frame.shape[0] != self._stream.height:
+            bgr_frame = cv2.resize(
+                bgr_frame,
+                (self._stream.width, self._stream.height),
+                interpolation=cv2.INTER_AREA,
+            )
+        frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(bgr_frame), format="bgr24")
         for packet in self._stream.encode(frame):
             self._container.mux(packet)
 
@@ -67,12 +118,39 @@ class _PyAvWriter:
             self._container.close()
 
 
+def _codec_usable(codec: str, width: int, height: int, fps: float) -> bool:
+    """Return True if *codec* can actually open and encode a frame.
+
+    PyAV opens the encoder lazily on the first ``encode()`` call, so simply
+    constructing a writer (``av.open`` + ``add_stream``) does not surface a
+    codec that is present but cannot be opened in this environment (e.g.
+    ``libopenh264``). We probe by encoding one black frame into a throwaway
+    file and flushing it.
+    """
+    tmp = Path(tempfile.mktemp(suffix=".mp4", prefix="codec_probe_"))
+    try:
+        writer = _PyAvWriter(tmp, width, height, fps, codec)
+        writer.write(np.zeros((int(height), int(width), 3), dtype=np.uint8))
+        writer.release()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _open_video_writer(path: Path, width: int, height: int, fps: float) -> _PyAvWriter:
     """Open the first PyAV codec from ``_PYAV_CODECS`` that successfully writes ``path``."""
     last_err: Exception | None = None
     for codec in _PYAV_CODECS:
+        enc_w, enc_h = _fit_codec_dims(codec, width, height)
+        if not _codec_usable(codec, enc_w, enc_h, fps):
+            continue
         try:
-            return _PyAvWriter(path, width, height, fps, codec)
+            return _PyAvWriter(path, enc_w, enc_h, fps, codec)
         except Exception as e:
             last_err = e
             try:

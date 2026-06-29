@@ -95,6 +95,7 @@ try:
     from rclpy.executors import SingleThreadedExecutor
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import SetParameters as SetParametersSrv
+    from sensor_msgs.msg import JointState as JointStateMsg
     from std_srvs.srv import Empty as EmptySrv
     from std_srvs.srv import Trigger as TriggerSrv
     try:
@@ -148,9 +149,9 @@ class RecordingState:
             self._start_locked(label=label)
             return "started"
 
-    def start(self, label: str = "") -> None:
+    def start(self, label: str = "") -> bool:
         with self._lock:
-            self._start_locked(label=label)
+            return self._start_locked(label=label)
 
     def stop(self, label: str = "") -> None:
         with self._lock:
@@ -160,13 +161,14 @@ class RecordingState:
         with self._lock:
             self._stop_locked(label=label, save_episode=False)
 
-    def _start_locked(self, label: str = "") -> None:
+    def _start_locked(self, label: str = "") -> bool:
         now = time.monotonic()
         if now - self._last_toggle_time < 1.0:
-            return
+            return False
         self._last_toggle_time = now
         self.is_recording = True
         logging.info(f"[{label}] ● Recording STARTED — episode {self.episode_idx}")
+        return True
 
     def _stop_locked(self, label: str = "", save_episode: bool = True) -> None:
         if not self.is_recording:
@@ -581,10 +583,137 @@ def start_recording_session(
         logging.warning("[%s] Recording is already active", label)
         return False
 
-    control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=label)
+    # Claim the recording start FIRST (this honours the debounce). Only switch
+    # GELLO to NORMAL if we actually started — otherwise a debounced or
+    # duplicate press (e.g. a composite pedal echoing the same key on several
+    # evdev nodes) would flip GELLO live while nothing is being recorded,
+    # leaving the rig in "NORMAL but not recording".
+    if not recording_state.start(label=label):
+        logging.info("[%s] Start ignored (debounced); GELLO left unchanged", label)
+        return False
     recording_state.clear_transient_label()
-    recording_state.start(label=label)
+    control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=label)
     return True
+
+
+# Tolerances for the skip-if-already-home / verify-reached-home logic in the
+# reset path. Values are in radians on non-gripper joints. Kept in sync with
+# dagger.py, which uses the identical guard.
+#   * SKIP threshold: tight — only skip the home publish when the arm is
+#     essentially already there. Republishing a zero-delta home trajectory is
+#     wasted wall-clock at best and, on the custom UR bridge, can leave the
+#     controller in a state where the *next* non-zero command is ignored too
+#     (the operator then has to restart the controller and recording).
+#   * VERIFY threshold: looser — after send_home's per-arm settle sleep the arm
+#     should be within this much of home; if not, the controller didn't act.
+_HOME_SKIP_TOL_RAD = 0.02
+_HOME_VERIFY_TOL_RAD = 0.08
+
+
+def _arm_gripper_index(
+    arm_configs: dict,
+    home_joint_names: dict[str, List[str]],
+    arm_name: str,
+) -> int:
+    """Index of the gripper joint in ``home_joint_names[arm_name]``, or -1."""
+    cfg = arm_configs.get(arm_name)
+    names = home_joint_names.get(arm_name, [])
+    if cfg is None or not names:
+        return -1
+    suffix = cfg.gripper_joint
+    for i, n in enumerate(names):
+        if n.endswith(suffix):
+            return i
+    return -1
+
+
+def _arm_non_gripper_max_delta(
+    arm_configs: dict,
+    home_positions: dict[str, List[float]],
+    home_joint_names: dict[str, List[str]],
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]],
+    arm_name: str,
+) -> Optional[float]:
+    """Max-abs error (rad) between current arm state and the home target across
+    all NON-gripper joints. ``None`` if state or config is missing."""
+    names = home_joint_names.get(arm_name, [])
+    home = home_positions.get(arm_name, [])
+    if not names or not home or len(home) < len(names):
+        return None
+    current = state_source(arm_name) if state_source is not None else None
+    if current is None or len(current) < len(names):
+        return None
+    g_idx = _arm_gripper_index(arm_configs, home_joint_names, arm_name)
+    max_delta = 0.0
+    for i in range(len(names)):
+        if i == g_idx or i >= len(current):
+            continue
+        max_delta = max(max_delta, abs(float(current[i]) - float(home[i])))
+    return max_delta
+
+
+def _open_gripper_before_home(
+    arm_configs: dict,
+    home_positions: dict[str, List[float]],
+    home_joint_names: dict[str, List[str]],
+    home_sender: RobotHomeSender,
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]],
+    arm_name: str,
+    label: str,
+) -> None:
+    """Publish a JointState that holds the arm joints at their current state but
+    moves the gripper joint to its home value.
+
+    First step of the reset sequence: it lets go of whatever the gripper is
+    holding *before* the arm is told to move home. Without it, an arm closed
+    around an object fights the home trajectory and can trigger a protective
+    stop that needs a robot reboot.
+    """
+    cfg = arm_configs.get(arm_name)
+    names = home_joint_names.get(arm_name, [])
+    home = home_positions.get(arm_name, [])
+    if cfg is None or not names or not home:
+        return
+
+    gripper_suffix = cfg.gripper_joint
+    try:
+        g_idx = next(i for i, n in enumerate(names) if n.endswith(gripper_suffix))
+    except StopIteration:
+        logging.warning(
+            "[%s] gripper joint suffix %r not found in home_joint_names; "
+            "skipping gripper-open pre-step",
+            arm_name, gripper_suffix,
+        )
+        return
+
+    current = state_source(arm_name) if state_source is not None else None
+    if current is None or len(current) < len(names):
+        logging.warning(
+            "[%s] current state unavailable; skipping gripper-open pre-step",
+            arm_name,
+        )
+        return
+
+    positions = [float(current[i]) for i in range(len(names))]
+    positions[g_idx] = float(home[g_idx])
+
+    # Reuse the JointState publisher home_sender already owns so we don't race
+    # with it on the same action topic.
+    pub = home_sender._publishers.get(arm_name)
+    if pub is None:
+        return
+
+    msg = JointStateMsg()
+    msg.header.stamp.sec = 3
+    msg.header.stamp.nanosec = 0
+    msg.name = list(names)
+    msg.position = positions
+    pub.publish(msg)
+    logging.info(
+        "[%s] [%s] Gripper-open published (idx %d, target %.4f); holding arm at current state",
+        label, arm_name, g_idx, positions[g_idx],
+    )
+    time.sleep(3.0)
 
 
 def reset_recording_session(
@@ -595,6 +724,8 @@ def reset_recording_session(
     home_joint_names: dict[str, List[str]],
     reset_service_client: ResetServiceClient,
     label: str,
+    arm_configs: Optional[dict] = None,
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]] = None,
 ) -> bool:
     if recording_state.is_recording:
         logging.warning("[%s] Reset requested while recording; stop first", label)
@@ -602,8 +733,96 @@ def reset_recording_session(
 
     recording_state.set_resetting(True)
     try:
-        home_sender.send_home(home_positions, home_joint_names)
-        reset_service_client.call(label=label)
+        if arm_configs is None or state_source is None:
+            # Legacy fallback: no state source wired up, so we can't reason
+            # about whether the arm is already home — publish unconditionally.
+            home_sender.send_home(home_positions, home_joint_names)
+            reset_service_client.call(label=label)
+        else:
+            # Robust reset sequence (mirrors dagger.py):
+            #   1. open right gripper, then left gripper
+            #   2. home only arms that aren't already essentially at home
+            #   3. verify each arm ended up at home
+            reset_arm_order = [a for a in ("right", "left") if a in home_positions]
+            for arm in reset_arm_order:
+                _open_gripper_before_home(
+                    arm_configs,
+                    home_positions,
+                    home_joint_names,
+                    home_sender,
+                    state_source,
+                    arm,
+                    label=label,
+                )
+
+            # Skip the home publish for arms already essentially at home.
+            # Republishing a zero-delta trajectory can put the custom UR
+            # bridge into a state where the next non-zero command is ignored,
+            # forcing a controller + recording restart.
+            homing_arms: List[str] = []
+            for arm in reset_arm_order:
+                delta = _arm_non_gripper_max_delta(
+                    arm_configs, home_positions, home_joint_names, state_source, arm
+                )
+                if delta is None:
+                    # State unavailable — be safe and publish.
+                    homing_arms.append(arm)
+                    continue
+                if delta < _HOME_SKIP_TOL_RAD:
+                    logging.info(
+                        "[%s] [%s] already at home (max_delta=%.4f rad); "
+                        "skipping home publish",
+                        label, arm, delta,
+                    )
+                    continue
+                homing_arms.append(arm)
+
+            if homing_arms:
+                ordered_home_positions = {a: home_positions[a] for a in homing_arms}
+                ordered_home_joint_names = {a: home_joint_names[a] for a in homing_arms}
+                home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
+
+            reset_service_client.call(label=label)
+
+            # Verify every arm ended up at home. If not, the controller didn't
+            # act (protective stop, inactive controller, dead hardware
+            # interface) — surface it so the operator knows pedal presses
+            # won't recover it.
+            any_stuck = False
+            for arm in reset_arm_order:
+                delta = _arm_non_gripper_max_delta(
+                    arm_configs, home_positions, home_joint_names, state_source, arm
+                )
+                if delta is None:
+                    logging.warning(
+                        "[%s] [%s] post-reset verification skipped — state unavailable",
+                        label, arm,
+                    )
+                    continue
+                if delta > _HOME_VERIFY_TOL_RAD:
+                    any_stuck = True
+                    logging.error(
+                        "[%s] [%s] DID NOT REACH HOME after reset "
+                        "(max_delta=%.3f rad, tol=%.3f). The arm controller on "
+                        "ur_robotiq likely did not execute the trajectory — "
+                        "possible protective stop, inactive controller, or dead "
+                        "hardware interface. Check the ur_robotiq container logs "
+                        "and `ros2 control list_hardware_components`. Pedal "
+                        "presses will NOT recover this; a driver restart is "
+                        "required.",
+                        label, arm, delta, _HOME_VERIFY_TOL_RAD,
+                    )
+                else:
+                    logging.info(
+                        "[%s] [%s] at home (max_delta=%.4f rad)", label, arm, delta
+                    )
+            if any_stuck:
+                logging.error(
+                    "[%s] Reset finished with at least one arm NOT at home. "
+                    "Recording further episodes is unsafe until the arm "
+                    "controller is recovered.",
+                    label,
+                )
     finally:
         recording_state.set_resetting(False)
     logging.info("[%s] Reset complete; recording remains stopped", label)
@@ -658,6 +877,8 @@ def discard_or_reset_recording_session(
     stats_path: Path,
     recording_hz: float,
     label: str,
+    arm_configs: Optional[dict] = None,
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]] = None,
 ) -> bool:
     if recording_state.is_recording:
         return discard_recording_session(
@@ -677,6 +898,8 @@ def discard_or_reset_recording_session(
         home_joint_names,
         reset_service_client,
         label=label,
+        arm_configs=arm_configs,
+        state_source=state_source,
     )
 
 
@@ -1088,6 +1311,8 @@ def main() -> None:
                 home_joint_names,
                 reset_service_client,
                 label="reset_return",
+                arm_configs=arm_configs,
+                state_source=_home_state_source,
             )
             response.success = bool(success)
             response.message = "reset completed" if success else "reset failed"
@@ -1256,6 +1481,8 @@ def main() -> None:
                     home_joint_names,
                     reset_service_client,
                     label=source,
+                    arm_configs=arm_configs,
+                    state_source=_home_state_source,
                 )
 
             command_executor.submit(source, "reset", _action)

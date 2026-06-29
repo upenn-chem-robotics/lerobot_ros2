@@ -65,6 +65,17 @@ from lerobot_ros2.helper import (
 )
 from lerobot_ros2.visualizer import LivePreview, tile_frames_grid
 
+# Reuse the robust homing/reset helpers from record.py so deploy homes the
+# arms the same safe way the recorder does: open grippers, skip the home
+# publish for arms already at home (republishing a zero-delta trajectory can
+# fault the custom UR bridge, e.g. "too high voltage"), then verify.
+from lerobot_ros2.cli.record import (
+    _HOME_SKIP_TOL_RAD,
+    _HOME_VERIFY_TOL_RAD,
+    _arm_non_gripper_max_delta,
+    _open_gripper_before_home,
+)
+
 try:
     import rclpy
     from rclpy.node import Node
@@ -791,10 +802,16 @@ def main() -> None:
         sys.exit(f"Invalid wrap_joints in recording config: {exc}")
     unwrap_opts = resolve_unwrap_config(cfg)
 
+    def _home_state_source(arm_name: str) -> Optional[np.ndarray]:
+        reader = state_readers.get(arm_name)
+        if reader is None:
+            return None
+        return reader.get_joint_pos()
+
     home_sender = RobotHomeSender(
         node,
         arm_configs,
-        state_source=lambda arm: state_readers[arm].get_joint_pos() if arm in state_readers else None,
+        state_source=_home_state_source,
         wrap_joint_suffixes=wrap_joint_suffixes,
         unwrap_max_step=unwrap_opts["max_step"],
         unwrap_waypoint_stamp_s=unwrap_opts["waypoint_stamp_s"],
@@ -942,6 +959,82 @@ def main() -> None:
             args.hz,
         )
 
+    def _robust_home() -> None:
+        """Home the arms safely (mirrors record.py's reset sequence).
+
+        1. open right gripper, then left gripper
+        2. home only arms that aren't already essentially at home — republishing
+           a zero-delta home trajectory can fault the custom UR bridge (e.g.
+           "too high voltage") and require a controller restart
+        3. verify each arm ended up at home and log loudly if one didn't
+        """
+        home_order = [a for a in ("right", "left") if a in home_positions]
+
+        for arm in home_order:
+            _open_gripper_before_home(
+                arm_configs,
+                home_positions,
+                arm_joint_names,
+                home_sender,
+                _home_state_source,
+                arm,
+                label="deploy",
+            )
+
+        homing_arms: List[str] = []
+        for arm in home_order:
+            delta = _arm_non_gripper_max_delta(
+                arm_configs, home_positions, arm_joint_names, _home_state_source, arm
+            )
+            if delta is None:
+                # State unavailable — be safe and publish.
+                homing_arms.append(arm)
+                continue
+            if delta < _HOME_SKIP_TOL_RAD:
+                logging.info(
+                    "[deploy] [%s] already at home (max_delta=%.4f rad); "
+                    "skipping home publish",
+                    arm, delta,
+                )
+                continue
+            homing_arms.append(arm)
+
+        if homing_arms:
+            ordered_home_positions = {a: home_positions[a] for a in homing_arms}
+            ordered_home_joint_names = {a: arm_joint_names[a] for a in homing_arms}
+            home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
+
+        any_stuck = False
+        for arm in home_order:
+            delta = _arm_non_gripper_max_delta(
+                arm_configs, home_positions, arm_joint_names, _home_state_source, arm
+            )
+            if delta is None:
+                logging.warning(
+                    "[deploy] [%s] post-home verification skipped — state unavailable",
+                    arm,
+                )
+                continue
+            if delta > _HOME_VERIFY_TOL_RAD:
+                any_stuck = True
+                logging.error(
+                    "[deploy] [%s] DID NOT REACH HOME after homing "
+                    "(max_delta=%.3f rad, tol=%.3f). The arm controller likely "
+                    "did not execute the trajectory — possible protective stop, "
+                    "fault (e.g. too high voltage), inactive controller, or dead "
+                    "hardware interface. Check the ur_robotiq container logs and "
+                    "`ros2 control list_hardware_components`. A driver restart is "
+                    "likely required.",
+                    arm, delta, _HOME_VERIFY_TOL_RAD,
+                )
+            else:
+                logging.info("[deploy] [%s] at home (max_delta=%.4f rad)", arm, delta)
+        if any_stuck:
+            logging.error(
+                "[deploy] Homing finished with at least one arm NOT at home; "
+                "running the policy is unsafe until the controller is recovered."
+            )
+
     def _start_new_episode() -> None:
         nonlocal episode_count, has_run_once
         running_event.clear()
@@ -962,7 +1055,7 @@ def main() -> None:
         wrap_manager.reset_episode()
         stabilizer.reset()
         logging.info("REPLAY — homing, then restarting policy")
-        home_sender.send_home(home_positions, arm_joint_names)
+        _robust_home()
         episode_count += 1
         _open_episode_grid_writer(episode_count)
         # Seed wrap-joint offsets from the home pose we just commanded, not
