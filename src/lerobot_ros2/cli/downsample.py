@@ -24,6 +24,14 @@ name in ``experiment_config.yaml`` is also stripped from the destination.
 
 Videos are re-encoded at 1/DOWNSAMPLE resolution (default 5x: 720x1280 -> 144x256).
 
+Alternatively, pass ``--out-size H W`` to scale every camera to one common
+resolution (required by the diffusion policy, which expects all cameras to
+share a shape). Combine with ``--crop NAME TOP LEFT HEIGHT WIDTH`` to crop a
+per-camera ROI at full resolution *before* scaling, e.g. to zoom the dataset in
+on a small region. The source ROI for every camera is recorded in the output
+``info.json`` (``source_crop`` / ``source_shape``) so deploy/dagger can
+reproduce the identical crop-then-resize at inference time.
+
 Optionally drop the first N frames from every episode when rewriting the
 trajectory and episode metadata. When trimming, per-row timestamps are
 rebased to start at 0 for each episode so they stay aligned with the
@@ -31,6 +39,7 @@ shifted video metadata.
 
 Usage:
     lerobot-ros-downsample --src /path/to/src_dataset --dst /path/to/dst_dataset \
+        [--downsample N] [--out-size H W] [--crop NAME TOP LEFT HEIGHT WIDTH ...] \
         [--skip-first-frames N] [--delete-episodes E1 E2 ...] [--exclude-cameras NAME ...] \
         [--exclude-arms PREFIX ...]
 """
@@ -77,6 +86,17 @@ ARM_ORIG_DIMS: dict[str, int] = {}
 # Feature keys that may be sliced by ``--exclude-arms``.
 STATE_ACTION_KEYS: tuple[str, ...] = ("observation.state", "action")
 
+# Per-camera full-res crop ROIs keyed by *stripped* camera name (e.g. "front").
+# Each value is ``{top, left, height, width}`` in source-video pixel coords and
+# is applied by ffmpeg before scaling to ``OUT_SIZE``. Cameras absent here are
+# scaled full-frame. Populated in ``main`` from ``--crop``.
+CROPS: dict[str, dict[str, int]] = {}
+
+# Common output ``(H, W)`` that every camera is scaled to after any crop. When
+# ``None`` the legacy 1/downsample whole-frame behaviour is used. Set from
+# ``--out-size``.
+OUT_SIZE: tuple[int, int] | None = None
+
 _CAMERA_PREFIX_RE = re.compile(r"^observation\.images\.camera_\d+_(?P<name>.+)$")
 _EPISODE_STATE_ACTION_COL_RE = re.compile(
     r"^stats/(?P<feature>observation\.state|action)/[^/]+$"
@@ -100,6 +120,83 @@ def _arm_prefix_matches(name: str, prefixes: set[str]) -> bool:
         if lname == prefix or lname.startswith(prefix + "_"):
             return True
     return False
+
+
+def _stripped_cam_name(feature_key: str) -> str:
+    """Return the camera name after the ``observation.images.`` prefix.
+
+    Works for both renamed keys (``observation.images.front``) and any raw key
+    that still carries the prefix. Falls back to the whole string otherwise.
+    """
+    marker = "observation.images."
+    idx = feature_key.rfind(marker)
+    if idx == -1:
+        return feature_key
+    return feature_key[idx + len(marker):]
+
+
+def parse_crops(raw_entries: list[list[str]]) -> dict[str, dict[str, int]]:
+    """Parse ``--crop NAME TOP LEFT HEIGHT WIDTH`` entries into a dict.
+
+    Keyed by the stripped camera name; values are ``{top, left, height,
+    width}`` ints. Raises ``SystemExit`` on malformed / non-positive specs so a
+    typo can't silently produce a bad dataset.
+    """
+    crops: dict[str, dict[str, int]] = {}
+    for entry in raw_entries or []:
+        if len(entry) != 5:
+            raise SystemExit(
+                f"--crop expects 5 values NAME TOP LEFT HEIGHT WIDTH; got {entry}"
+            )
+        name = str(entry[0]).strip()
+        if not name:
+            raise SystemExit(f"--crop has an empty NAME in {entry}")
+        try:
+            top, left, height, width = (int(v) for v in entry[1:])
+        except ValueError:
+            raise SystemExit(f"--crop TOP LEFT HEIGHT WIDTH must be integers; got {entry}")
+        if height <= 0 or width <= 0:
+            raise SystemExit(f"--crop {name} height/width must be positive; got {entry}")
+        if top < 0 or left < 0:
+            raise SystemExit(f"--crop {name} top/left must be >= 0; got {entry}")
+        if name in crops:
+            raise SystemExit(f"--crop specified more than once for camera {name!r}")
+        crops[name] = {"top": top, "left": left, "height": height, "width": width}
+    return crops
+
+
+def validate_crops_against_source(
+    source_info: dict,
+    key_map: dict[str, str],
+    crops: dict[str, dict[str, int]],
+) -> None:
+    """Ensure every ``--crop`` names a kept camera and fits its source frame.
+
+    ``source_info`` is the parsed source ``info.json``. Bounds are checked
+    against each camera's declared ``[height, width, channels]`` shape.
+    """
+    kept_names = {_stripped_cam_name(new_key) for new_key in key_map.values()}
+    features = source_info.get("features") or {}
+    for name, spec in crops.items():
+        if name not in kept_names:
+            raise SystemExit(
+                f"--crop names camera {name!r}, which is not a kept camera. "
+                f"Available: {sorted(kept_names)}"
+            )
+        # Find the source feature for this stripped name to read its dims.
+        src_key = next(
+            (old for old, new in key_map.items() if _stripped_cam_name(new) == name),
+            None,
+        )
+        ft = features.get(src_key) if src_key else None
+        shape = (ft or {}).get("shape") if isinstance(ft, dict) else None
+        if not shape or len(shape) < 2:
+            continue
+        h, w = int(shape[0]), int(shape[1])
+        if spec["top"] + spec["height"] > h or spec["left"] + spec["width"] > w:
+            raise SystemExit(
+                f"--crop {name} {spec} exceeds source frame (H={h}, W={w})."
+            )
 
 
 def derive_key_map(src: Path, exclude: set[str] | None = None) -> dict[str, str]:
@@ -435,13 +532,29 @@ def rewrite_info_json(
             new_key = KEY_MAP.get(key, key)
             ft = json.loads(json.dumps(ft))  # deep copy
             h, w, c = ft["shape"]
-            new_h, new_w = h // downsample, w // downsample
+            if OUT_SIZE is not None:
+                new_h, new_w = OUT_SIZE
+            else:
+                new_h, new_w = h // downsample, w // downsample
             ft["shape"] = [new_h, new_w, c]
             if "info" in ft:
                 ft["info"]["video.height"] = new_h
                 ft["info"]["video.width"] = new_w
                 ft["info"]["video.codec"] = "h264"
                 ft["info"]["video.pix_fmt"] = "yuv420p"
+                # Record the source ROI so deploy/dagger can reproduce the same
+                # full-res crop-then-resize. Uncropped cameras get the full
+                # source frame so downstream code can treat every camera
+                # uniformly.
+                cam_name = _stripped_cam_name(new_key)
+                spec = CROPS.get(cam_name) or {
+                    "top": 0,
+                    "left": 0,
+                    "height": int(h),
+                    "width": int(w),
+                }
+                ft["info"]["source_crop"] = dict(spec)
+                ft["info"]["source_shape"] = [int(h), int(w)]
         else:
             new_key = KEY_MAP.get(key, key)
             if key in ARM_KEEP_INDICES:
@@ -678,14 +791,29 @@ def downsample_videos(src: Path, dst: Path, downsample: int) -> None:
         if not src_key_dir.exists():
             print(f"[skip] {src_key_dir} not present")
             continue
+        cam_name = _stripped_cam_name(new_key)
+        crop_spec = CROPS.get(cam_name)
         for mp4 in src_key_dir.rglob("*.mp4"):
             rel = mp4.relative_to(src_key_dir)
             out = dst / "videos" / new_key / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            # iw/downsample, ih/downsample, force even dims
-            vf = (
-                f"scale=trunc(iw/{downsample}/2)*2:trunc(ih/{downsample}/2)*2"
-            )
+            if OUT_SIZE is not None:
+                out_h, out_w = OUT_SIZE
+                # crop=w:h:x:y takes x=left, y=top. Apply the full-res crop
+                # first, then scale to the common output size (even dims).
+                scale = f"scale=trunc({out_w}/2)*2:trunc({out_h}/2)*2"
+                if crop_spec is not None:
+                    vf = (
+                        f"crop={crop_spec['width']}:{crop_spec['height']}:"
+                        f"{crop_spec['left']}:{crop_spec['top']},{scale}"
+                    )
+                else:
+                    vf = scale
+            else:
+                # iw/downsample, ih/downsample, force even dims
+                vf = (
+                    f"scale=trunc(iw/{downsample}/2)*2:trunc(ih/{downsample}/2)*2"
+                )
             cmd = [
                 "/bin/ffmpeg",
                 "-y",
@@ -791,6 +919,32 @@ def main():
     ap.add_argument("--dst", type=Path, required=True, help="Destination dataset root")
     ap.add_argument("--downsample", type=int, default=5, help="Spatial downsample factor (default 5)")
     ap.add_argument(
+        "--out-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help=(
+            "Common output resolution H W that every camera is scaled to after "
+            "any --crop. When set, this overrides the 1/downsample sizing so all "
+            "cameras share one shape (required by the diffusion policy)."
+        ),
+    )
+    ap.add_argument(
+        "--crop",
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("NAME", "TOP", "LEFT", "HEIGHT", "WIDTH"),
+        help=(
+            "Full-res crop ROI for one camera, e.g. "
+            "--crop right_wrist_top 3 436 704 505. NAME is the stripped camera "
+            "name (after the camera_NN_ prefix). Repeatable. Cameras without a "
+            "--crop are scaled full-frame. The ROI is recorded in the output "
+            "info.json so deploy can reproduce it."
+        ),
+    )
+    ap.add_argument(
         "--skip-first-frames",
         "--discard-first-frames",
         dest="skip_first_frames",
@@ -846,8 +1000,21 @@ def main():
     # cameras the user excluded on the CLI. KEY_MAP and EXCLUDED_CAMERAS are
     # module-level so the helper functions above pick them up.
     global KEY_MAP, EXCLUDED_CAMERAS, EXCLUDED_ARM_PREFIXES, ARM_KEEP_INDICES, ARM_ORIG_DIMS
+    global CROPS, OUT_SIZE
     EXCLUDED_CAMERAS = {str(name).strip() for name in args.exclude_cameras if str(name).strip()}
     KEY_MAP = derive_key_map(src, exclude=EXCLUDED_CAMERAS)
+
+    CROPS = parse_crops(args.crop)
+    OUT_SIZE = (int(args.out_size[0]), int(args.out_size[1])) if args.out_size else None
+    if CROPS and OUT_SIZE is None:
+        raise SystemExit("--crop requires --out-size so all cameras share one shape")
+    if CROPS:
+        validate_crops_against_source(source_info, KEY_MAP, CROPS)
+        print("[info] per-camera full-res crops:")
+        for name, spec in CROPS.items():
+            print(f"         {name}: {spec}")
+    if OUT_SIZE is not None:
+        print(f"[info] common output size (HxW): {OUT_SIZE[0]}x{OUT_SIZE[1]}")
 
     EXCLUDED_ARM_PREFIXES = {
         str(p).strip() for p in args.exclude_arms if str(p).strip()

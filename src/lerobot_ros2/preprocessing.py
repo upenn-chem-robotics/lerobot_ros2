@@ -163,3 +163,106 @@ def apply_per_camera_crop(
         int(spec["width"]),
     )
     return F.resize(cropped, [h, w], antialias=True)
+
+
+def load_fullres_crops_from_train_config(
+    policy_path: str | Path,
+) -> Dict[str, Dict[str, int]]:
+    """Recover the per-camera *full-resolution* crop ROIs used to build a dataset.
+
+    Unlike :func:`load_per_camera_crops_from_train_config` (which reads a
+    training-time augmentation crop applied to the already-downsampled frame),
+    this reads the source ROI that ``downsample.py`` baked into the dataset by
+    cropping the original recordings before resizing. Those ROIs live under each
+    video feature in the dataset's ``meta/info.json`` as
+    ``info.source_crop`` / ``info.source_shape``.
+
+    We locate the dataset through ``train_config.json`` (``dataset.root``) next
+    to ``policy_path`` and return ``{feature_key: {top,left,height,width,
+    source_shape:[H,W]}}``, keeping only cameras whose ROI is smaller than the
+    full source frame (i.e. real crops; full-frame entries are no-ops). Returns
+    an empty mapping when anything is missing or malformed, so inference keeps
+    working.
+    """
+    candidates = [
+        Path(policy_path) / "train_config.json",
+        Path(policy_path).parent / "train_config.json",
+    ]
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            cfg = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning("Could not read %s: %s", p, exc)
+            continue
+        root = (cfg.get("dataset") or {}).get("root")
+        if not root:
+            return {}
+        info_path = Path(root) / "meta" / "info.json"
+        if not info_path.exists():
+            logging.warning("fullres crops: dataset info.json missing at %s", info_path)
+            return {}
+        try:
+            info = json.loads(info_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning("Could not read %s: %s", info_path, exc)
+            return {}
+        out: Dict[str, Dict[str, int]] = {}
+        for key, ft in (info.get("features") or {}).items():
+            if not isinstance(ft, dict) or ft.get("dtype") != "video":
+                continue
+            meta = ft.get("info") or {}
+            coerced = _coerce_spec(str(key), meta.get("source_crop"))
+            if coerced is None:
+                continue
+            src_shape = meta.get("source_shape")
+            if isinstance(src_shape, (list, tuple)) and len(src_shape) == 2:
+                sh, sw = int(src_shape[0]), int(src_shape[1])
+                # Drop full-frame (no-op) crops so we only touch real ROIs.
+                if (
+                    coerced["top"] == 0
+                    and coerced["left"] == 0
+                    and coerced["height"] >= sh
+                    and coerced["width"] >= sw
+                ):
+                    continue
+                coerced["source_shape"] = [sh, sw]
+            out[str(key)] = coerced
+        return out
+    return {}
+
+
+def apply_fullres_crop(
+    bgr,
+    camera_key: str,
+    crops: Mapping[str, Mapping[str, int]],
+):
+    """Crop a raw ``H x W x C`` BGR frame to the training ROI (no resize).
+
+    This mirrors the offline crop-then-resize: the caller resizes the returned
+    region to the policy's visual size afterwards. When the live frame size
+    differs from the recorded ``source_shape``, the ROI is scaled
+    proportionally so the same physical region is selected. Cameras absent from
+    ``crops`` (or a ``None`` frame) are returned unchanged.
+    """
+    spec = crops.get(camera_key) if isinstance(crops, Mapping) else None
+    if not spec or bgr is None:
+        return bgr
+    h, w = int(bgr.shape[0]), int(bgr.shape[1])
+    top, left = int(spec["top"]), int(spec["left"])
+    ch, cw = int(spec["height"]), int(spec["width"])
+    src_shape = spec.get("source_shape") if isinstance(spec, Mapping) else None
+    if isinstance(src_shape, (list, tuple)) and len(src_shape) == 2:
+        sh, sw = int(src_shape[0]), int(src_shape[1])
+        if sh > 0 and sw > 0 and (sh != h or sw != w):
+            sy, sx = h / sh, w / sw
+            top, ch = int(round(top * sy)), int(round(ch * sy))
+            left, cw = int(round(left * sx)), int(round(cw * sx))
+    top = max(0, min(top, h - 1))
+    left = max(0, min(left, w - 1))
+    bottom = min(h, top + ch)
+    right = min(w, left + cw)
+    if bottom <= top or right <= left:
+        return bgr
+    return bgr[top:bottom, left:right]

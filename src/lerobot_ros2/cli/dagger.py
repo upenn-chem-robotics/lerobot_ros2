@@ -80,6 +80,7 @@ from lerobot_ros2.helper import (
     ArmState,
     CameraReader,
     CameraStabilizer,
+    _slugify_camera_name,
     FootPedalThread,
     PEDAL_DEFAULT_DEVICE,
     RobotHomeSender,
@@ -126,12 +127,14 @@ from lerobot_ros2.cli.deploy import (
     _load_policy_type,
     _policy_visual_size,
     _resolve_arm_keys,
+    detect_fullres_crops,
     detect_per_camera_crops,
     detect_training_resize,
+    parse_fullres_crop_args,
     resolve_experiment_config_path,
     resolve_recording_config_path,
 )
-from lerobot_ros2.preprocessing import apply_per_camera_crop
+from lerobot_ros2.preprocessing import apply_fullres_crop, apply_per_camera_crop
 
 try:
     import rclpy
@@ -560,6 +563,18 @@ def parse_args() -> argparse.Namespace:
             "dataset. Auto-discovered near --policy by default; pass '' to force gello.yaml."
         ),
     )
+    parser.add_argument(
+        "--fullres-crop",
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("NAME", "TOP", "LEFT", "HEIGHT", "WIDTH"),
+        help=(
+            "Override the per-camera full-res crop ROI applied to the raw frame "
+            "before feeding the policy (matches training). Repeatable. When "
+            "omitted, auto-detected from the training dataset's info.json."
+        ),
+    )
     orient_group = parser.add_mutually_exclusive_group()
     orient_group.add_argument(
         "--stabilize-orientation",
@@ -760,6 +775,17 @@ def main() -> None:
             per_camera_crops,
         )
 
+    fullres_crops = parse_fullres_crop_args(args.fullres_crop)
+    if fullres_crops:
+        logging.info("Using per-camera full-res crops from --fullres-crop: %s", fullres_crops)
+    else:
+        fullres_crops = detect_fullres_crops(args.policy)
+        if fullres_crops:
+            logging.info(
+                "Auto-detected full-res crops from dataset info.json: %s",
+                fullres_crops,
+            )
+
     # ── Cameras ──────────────────────────────────────────────────────────
     logging.info("Opening configured cameras...")
     try:
@@ -768,6 +794,28 @@ def main() -> None:
         sys.exit(str(exc))
     time.sleep(0.3)
     logging.info("%d camera(s) active", len(cameras))
+
+    # Map cameras to policy image keys BY NAME (not by position). ``cameras`` is
+    # sorted alphabetically by name, which need not match the checkpoint's
+    # ``input_features`` order; matching by name keeps each physical view on the
+    # encoder slot it was trained with. See deploy.py for the full rationale.
+    camera_index_by_feature_key: Dict[str, int] = {}
+    for cam_idx, cam in enumerate(cameras):
+        camera_index_by_feature_key[f"observation.images.{_slugify_camera_name(cam.name)}"] = cam_idx
+    unmatched_policy_keys = [k for k in image_feature_keys if k not in camera_index_by_feature_key]
+    if unmatched_policy_keys:
+        logging.error(
+            "No camera matches policy image key(s) %s by name. Available cameras: %s. "
+            "Policy expects keys: %s.",
+            unmatched_policy_keys,
+            [cam.name for cam in cameras],
+            image_feature_keys,
+        )
+        sys.exit(1)
+    logging.info(
+        "Mapping cameras to policy image keys by name: %s",
+        {k: cameras[camera_index_by_feature_key[k]].name for k in image_feature_keys},
+    )
 
     configs_by_name = {c.name: c for c in camera_configs}
     # Main-loop camera stabilizer is shared with recording so flipping stays
@@ -1440,9 +1488,11 @@ def main() -> None:
                 dataset_bgr = cv2.resize(dataset_bgr, (record_w, record_h))
             dataset_images[feature_key] = Image.fromarray(cv2.cvtColor(dataset_bgr, cv2.COLOR_BGR2RGB))
 
-            if i < len(image_feature_keys):
-                policy_key = image_feature_keys[i]
+            policy_key = f"observation.images.{_slugify_camera_name(cam.name)}"
+            if policy_key in image_feature_keys:
                 policy_bgr = bgr
+                if fullres_crops:
+                    policy_bgr = apply_fullres_crop(policy_bgr, policy_key, fullres_crops)
                 if resize_transform is None and policy_visual_size is not None:
                     policy_bgr = cv2.resize(
                         policy_bgr,

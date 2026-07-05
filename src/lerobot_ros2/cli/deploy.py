@@ -51,6 +51,7 @@ from lerobot_ros2.helper import (
     ROSJointReader,
     RobotHomeSender,
     WrapJointManager,
+    _slugify_camera_name,
     extract_home_joint_names,
     load_arm_configs,
     load_camera_configs,
@@ -89,7 +90,9 @@ from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
 from lerobot_ros2.preprocessing import (
+    apply_fullres_crop,
     apply_per_camera_crop,
+    load_fullres_crops_from_train_config,
     load_per_camera_crops_from_train_config,
 )
 from lerobot_ros2.strided_history import StridedHistoryRunner, load_strided_config
@@ -163,6 +166,45 @@ def detect_per_camera_crops(policy_path: str) -> Dict[str, Dict[str, int]]:
     file is missing, malformed, or has no ``per_camera_crops`` block.
     """
     return load_per_camera_crops_from_train_config(policy_path)
+
+
+def detect_fullres_crops(policy_path: str) -> Dict[str, Dict[str, int]]:
+    """Recover the per-camera full-res crop ROIs baked into the dataset.
+
+    Mirrors :func:`detect_per_camera_crops` but reads ``source_crop`` from the
+    training dataset's ``meta/info.json`` (written by ``downsample.py``), so
+    deploy can crop the raw camera frame to the same ROI before resizing.
+    """
+    return load_fullres_crops_from_train_config(policy_path)
+
+
+def parse_fullres_crop_args(entries: Optional[list]) -> Dict[str, Dict[str, int]]:
+    """Parse ``--fullres-crop NAME TOP LEFT HEIGHT WIDTH`` entries.
+
+    NAME is the stripped camera name (e.g. ``front``); the returned mapping is
+    keyed by the full ``observation.images.<name>`` feature key so it lines up
+    with the deploy loop. Raises ``SystemExit`` on malformed specs.
+    """
+    crops: Dict[str, Dict[str, int]] = {}
+    for entry in entries or []:
+        if len(entry) != 5:
+            raise SystemExit(
+                f"--fullres-crop expects NAME TOP LEFT HEIGHT WIDTH; got {entry}"
+            )
+        name = str(entry[0]).strip()
+        if not name:
+            raise SystemExit(f"--fullres-crop has an empty NAME in {entry}")
+        try:
+            top, left, height, width = (int(v) for v in entry[1:])
+        except ValueError:
+            raise SystemExit(
+                f"--fullres-crop TOP LEFT HEIGHT WIDTH must be integers; got {entry}"
+            )
+        if height <= 0 or width <= 0 or top < 0 or left < 0:
+            raise SystemExit(f"--fullres-crop {name} has invalid bounds; got {entry}")
+        key = name if name.startswith("observation.images.") else f"observation.images.{name}"
+        crops[key] = {"top": top, "left": left, "height": height, "width": width}
+    return crops
 
 
 def resolve_experiment_config_path(policy_path: str, explicit_path: Optional[str]) -> Optional[Path]:
@@ -464,6 +506,20 @@ def parse_args() -> argparse.Namespace:
             "Pass --camera-settings '' to force using gello.yaml."
         ),
     )
+    parser.add_argument(
+        "--fullres-crop",
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("NAME", "TOP", "LEFT", "HEIGHT", "WIDTH"),
+        help=(
+            "Override the per-camera full-res crop ROI applied to the raw "
+            "camera frame before resizing, e.g. "
+            "--fullres-crop right_wrist_top 3 436 704 505. Repeatable. When "
+            "omitted, deploy auto-detects the ROIs recorded in the training "
+            "dataset's info.json (source_crop)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -605,6 +661,17 @@ def main() -> None:
             per_camera_crops,
         )
 
+    fullres_crops = parse_fullres_crop_args(args.fullres_crop)
+    if fullres_crops:
+        logging.info("Using per-camera full-res crops from --fullres-crop: %s", fullres_crops)
+    else:
+        fullres_crops = detect_fullres_crops(args.policy)
+        if fullres_crops:
+            logging.info(
+                "Auto-detected full-res crops from dataset info.json: %s",
+                fullres_crops,
+            )
+
     # ── Cameras ──────────────────────────────────────────────────────────
     camera_configs = load_camera_configs(cfg)
     logging.info("Opening configured cameras: %s", [f"{camera.index}:{camera.name}" for camera in camera_configs])
@@ -613,6 +680,34 @@ def main() -> None:
     logging.info(f"{len(cameras)} camera(s) active")
 
     readers_by_name = {reader.name: reader for reader in cameras}
+
+    # ── Map cameras to policy image keys BY NAME (not by position) ────────
+    # The policy's VISUAL input keys are ``observation.images.<slug>`` where
+    # ``<slug>`` is the slugified camera name (the ``camera_NN_`` record-time
+    # prefix is stripped by downsample). ``cameras`` is sorted alphabetically by
+    # name, which need not match the order of ``input_features`` in the
+    # checkpoint. Matching by name keeps each physical view on the encoder slot
+    # it was trained with regardless of ordering, fixing existing checkpoints.
+    camera_index_by_feature_key: Dict[str, int] = {}
+    for cam_idx, cam in enumerate(cameras):
+        camera_index_by_feature_key[f"observation.images.{_slugify_camera_name(cam.name)}"] = cam_idx
+    unmatched_policy_keys = [k for k in image_feature_keys if k not in camera_index_by_feature_key]
+    if unmatched_policy_keys:
+        logging.error(
+            "No camera matches policy image key(s) %s by name. "
+            "Available cameras: %s. Policy expects keys: %s. "
+            "Rename cameras in %s so each '%s<name>' has a camera named '<name>'.",
+            unmatched_policy_keys,
+            [cam.name for cam in cameras],
+            image_feature_keys,
+            config_path,
+            "observation.images.",
+        )
+        sys.exit(1)
+    logging.info(
+        "Mapping cameras to policy image keys by name: %s",
+        {k: cameras[camera_index_by_feature_key[k]].name for k in image_feature_keys},
+    )
 
     # ── 180° orientation stabilization (mirrors record.py) ──────────────
     # Some cameras occasionally deliver an upside-down frame after a USB hiccup.
@@ -736,14 +831,13 @@ def main() -> None:
     if len(cameras) != len(image_feature_keys):
         logging.error(
             "Number of cameras (%s) does not match policy visual inputs (%s). "
-            "Policy expects these keys in camera config order: %s. Adjust %s or the checkpoint.",
+            "Policy expects these keys (matched by name): %s. Adjust %s or the checkpoint.",
             len(cameras),
             len(image_feature_keys),
             image_feature_keys,
             config_path,
         )
         sys.exit(1)
-    logging.info("Mapping cameras to policy image keys (same order): %s", image_feature_keys)
 
     # ── ROS 2 node ───────────────────────────────────────────────────────
     rclpy.init()
@@ -1219,14 +1313,15 @@ def main() -> None:
                     time.sleep(0.05)
                     continue
 
-                # 2. Read camera images (i-th camera -> policy's i-th VISUAL input key)
+                # 2. Read camera images (matched to policy VISUAL keys BY NAME)
                 observation: dict = {
                     "observation.state": torch.from_numpy(state),
                 }
-                for i, cam in enumerate(cameras):
-                    bgr = frames[i]
-                    feature_key = image_feature_keys[i]
+                for feature_key in image_feature_keys:
+                    bgr = frames[camera_index_by_feature_key[feature_key]]
                     if bgr is not None:
+                        if fullres_crops:
+                            bgr = apply_fullres_crop(bgr, feature_key, fullres_crops)
                         if resize_transform is None and policy_visual_size is not None:
                             bgr = cv2.resize(bgr, (policy_visual_size[1], policy_visual_size[0]), interpolation=cv2.INTER_AREA)
                         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
