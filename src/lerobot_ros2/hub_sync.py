@@ -29,8 +29,11 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "hf_backup.yaml"
 
-# Env var to globally disable auto-push (e.g. ``LEROBOT_HF_PUSH=0``).
+# Env var to opt in to auto-push after record/dagger/train (e.g. ``LEROBOT_HF_PUSH=1``).
 PUSH_ENV_VAR = "LEROBOT_HF_PUSH"
+
+# Local-only paths never mirrored to HF (upload cache, bytecode, etc.).
+UPLOAD_IGNORE_PATTERNS = (".cache/**", "**/.cache/**", "**/__pycache__/**")
 
 
 @dataclass(frozen=True)
@@ -149,31 +152,87 @@ def resolve_target(
 
 
 def push_enabled(explicit: bool | None = None) -> bool:
-    """Resolve whether to push: explicit flag > ``LEROBOT_HF_PUSH`` env > True."""
+    """Resolve whether to push: explicit flag > ``LEROBOT_HF_PUSH`` env > False."""
     if explicit is not None:
         return explicit
     val = os.environ.get(PUSH_ENV_VAR)
     if val is None:
-        return True
+        return False
     return val.strip().lower() not in ("0", "false", "no", "off", "")
 
 
-def pop_no_push_flag(argv: list[str]) -> bool:
-    """Strip ``--no-push`` / ``--no_push`` from ``argv``; return True if present.
+def pop_push_flag(argv: list[str]) -> bool:
+    """Strip ``--push`` from ``argv``; return True if present.
 
     For CLIs that use draccus/other parsers which would reject unknown flags
     (e.g. the training entry points).
     """
-    aliases = {"--no-push", "--no_push"}
     found = False
     cleaned: list[str] = []
     for tok in argv:
-        if tok in aliases:
+        if tok == "--push":
             found = True
             continue
         cleaned.append(tok)
     argv[:] = cleaned
     return found
+
+
+def resolve_target_from_repo(
+    repo_name: str,
+    config_path: str | os.PathLike[str] | None = None,
+) -> RepoTarget:
+    """Build a :class:`RepoTarget` from an explicit repo name (no local path needed)."""
+    cfg = _cached_config(str(config_path) if config_path else None)
+    return RepoTarget(
+        repo_id=cfg.repo_id(repo_name),
+        repo_type=cfg.repo_type,
+        private=cfg.private,
+        path_in_repo="",
+    )
+
+
+def delete_repo(
+    local_path: str | os.PathLike[str] | None = None,
+    *,
+    repo_name: str | None = None,
+    config_path: str | os.PathLike[str] | None = None,
+) -> RepoTarget:
+    """Delete the mapped HF dataset repo. Provide ``local_path`` or ``repo_name``."""
+    if repo_name is not None:
+        target = resolve_target_from_repo(repo_name, config_path=config_path)
+    elif local_path is not None:
+        target = resolve_target(local_path, config_path=config_path)
+        if target.path_in_repo:
+            raise ValueError(
+                f"{local_path} maps to a sub-path of {target.repo_id} "
+                f"(/{target.path_in_repo}); --delete only supports whole repos."
+            )
+    else:
+        raise ValueError("Provide local_path or repo_name.")
+
+    api = _hf_api()
+    logger.info("Deleting HF repo %s (%s)", target.repo_id, target.repo_type)
+    try:
+        api.delete_repo(repo_id=target.repo_id, repo_type=target.repo_type)
+        logger.info("Deleted %s", target.repo_id)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "404" in msg or "not found" in msg or "does not exist" in msg:
+            logger.info("Repo %s does not exist on Hub; skipping", target.repo_id)
+        else:
+            raise
+    return target
+
+
+def _is_mirrored_local_file(path: Path, root: Path) -> bool:
+    """True if ``path`` is a regular file that should be backed up to HF."""
+    if not path.is_file():
+        return False
+    rel = path.relative_to(root)
+    if ".cache" in rel.parts or "__pycache__" in rel.parts:
+        return False
+    return True
 
 
 def _hf_api():
@@ -192,23 +251,28 @@ def sync_to_hub(
     local_path: str | os.PathLike[str],
     *,
     config_path: str | os.PathLike[str] | None = None,
+    repo_name: str | None = None,
     large: bool = False,
     create: bool = True,
     dry_run: bool = False,
 ) -> RepoTarget:
     """Upload ``local_path`` to its mapped private HF repo (incremental).
 
-    ``large=True`` uses ``upload_large_folder`` (resumable, multi-threaded) and
-    is intended for the one-time bulk backup of whole experiment folders; it
-    requires ``path_in_repo == ""`` (repo root == folder). Otherwise a plain
-    ``upload_folder`` is used, which only re-uploads changed/new files and so is
-    cheap for repeated post-run syncs.
+    Uses ``upload_folder``, which only re-uploads changed/new files. Local
+    ``.cache/`` trees (HF upload metadata) are excluded via ``ignore_patterns``.
+
+    ``large`` is accepted for backward compatibility but ignored: the old
+    ``upload_large_folder`` path could report success from stale local cache
+    while real files were still missing on the Hub.
     """
     abs_path = Path(local_path).resolve()
     if not abs_path.exists():
         raise FileNotFoundError(f"Nothing to upload: {abs_path} does not exist.")
 
-    target = resolve_target(abs_path, config_path=config_path)
+    if repo_name is not None:
+        target = resolve_target_from_repo(repo_name, config_path=config_path)
+    else:
+        target = resolve_target(abs_path, config_path=config_path)
     logger.info(
         "HF mirror: %s -> %s%s%s",
         abs_path,
@@ -228,22 +292,34 @@ def sync_to_hub(
             exist_ok=True,
         )
 
-    if large and not target.path_in_repo:
-        api.upload_large_folder(
-            repo_id=target.repo_id,
-            folder_path=str(abs_path),
-            repo_type=target.repo_type,
-            private=target.private,
+    if large:
+        logger.warning(
+            "upload_large_folder is deprecated and can falsely report success; "
+            "using upload_folder instead."
+        )
+    api.upload_folder(
+        repo_id=target.repo_id,
+        repo_type=target.repo_type,
+        folder_path=str(abs_path),
+        path_in_repo=target.path_in_repo or None,
+        commit_message=f"Mirror {abs_path.name}",
+        ignore_patterns=list(UPLOAD_IGNORE_PATTERNS),
+    )
+    ok, missing = verify(
+        abs_path,
+        config_path=config_path,
+        repo_name=repo_name,
+    )
+    if not ok:
+        logger.warning(
+            "HF mirror finished but %d file(s) still missing on %s. "
+            "Re-run: lerobot-ros-backup %s",
+            len(missing),
+            target.repo_id,
+            abs_path,
         )
     else:
-        api.upload_folder(
-            repo_id=target.repo_id,
-            repo_type=target.repo_type,
-            folder_path=str(abs_path),
-            path_in_repo=target.path_in_repo or None,
-            commit_message=f"Mirror {abs_path.name}",
-        )
-    logger.info("HF mirror complete: %s", target.repo_id)
+        logger.info("HF mirror complete: %s", target.repo_id)
     return target
 
 
@@ -256,10 +332,10 @@ def try_sync_to_hub(
 ) -> None:
     """Best-effort wrapper for post-run hooks: never raises, logs on failure.
 
-    Respects :func:`push_enabled` (the ``--no-push`` flag / ``LEROBOT_HF_PUSH``).
+    Respects :func:`push_enabled` (the ``--push`` flag / ``LEROBOT_HF_PUSH=1``).
     """
     if not push_enabled(push):
-        logger.info("HF auto-push disabled (LEROBOT_HF_PUSH/--no-push); skipping %s", local_path)
+        logger.info("HF auto-push disabled; skipping %s (pass --push or set LEROBOT_HF_PUSH=1)", local_path)
         return
     try:
         sync_to_hub(local_path, config_path=config_path, large=large)
@@ -277,6 +353,7 @@ def verify(
     local_path: str | os.PathLike[str],
     *,
     config_path: str | os.PathLike[str] | None = None,
+    repo_name: str | None = None,
 ) -> tuple[bool, list[str]]:
     """Compare local files under ``local_path`` against the mapped HF repo.
 
@@ -285,7 +362,10 @@ def verify(
     local folder.
     """
     abs_path = Path(local_path).resolve()
-    target = resolve_target(abs_path, config_path=config_path)
+    if repo_name is not None:
+        target = resolve_target_from_repo(repo_name, config_path=config_path)
+    else:
+        target = resolve_target(abs_path, config_path=config_path)
     api = _hf_api()
 
     prefix = (target.path_in_repo + "/") if target.path_in_repo else ""
@@ -300,7 +380,7 @@ def verify(
     local_files = [
         prefix + p.relative_to(abs_path).as_posix()
         for p in abs_path.rglob("*")
-        if p.is_file()
+        if _is_mirrored_local_file(p, abs_path)
     ]
     missing = sorted(f for f in local_files if f not in remote)
     ok = not missing

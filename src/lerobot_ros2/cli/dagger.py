@@ -594,10 +594,10 @@ def parse_args() -> argparse.Namespace:
         help="Override MAE gap (normal vs flipped) for all cameras.",
     )
     parser.add_argument(
-        "--no-push",
+        "--push",
         action="store_true",
-        help="Do not mirror the dagger dataset to Hugging Face when done "
-             "(default: push, per config/hf_backup.yaml; or set LEROBOT_HF_PUSH=0).",
+        help="Mirror the dagger dataset to Hugging Face when done "
+             "(default: no upload; or set LEROBOT_HF_PUSH=1).",
     )
     return parser.parse_args()
 
@@ -1946,8 +1946,8 @@ def main() -> None:
         rclpy.try_shutdown()
 
     # ── Mirror the finished dagger dataset to Hugging Face (best-effort) ──
-    # Never raises; disable with --no-push or LEROBOT_HF_PUSH=0.
-    try_sync_to_hub(root, push=not args.no_push)
+    # Never raises; enable with --push or LEROBOT_HF_PUSH=1.
+    try_sync_to_hub(root, push=args.push)
 
 
 if __name__ == "__main__":

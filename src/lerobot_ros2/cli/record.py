@@ -1122,10 +1122,10 @@ def parse_args() -> argparse.Namespace:
         help="Override MAE gap (normal vs flipped) for all cameras; default from config or 20.",
     )
     parser.add_argument(
-        "--no-push",
+        "--push",
         action="store_true",
-        help="Do not mirror the recorded dataset to Hugging Face when done "
-             "(default: push, per config/hf_backup.yaml; or set LEROBOT_HF_PUSH=0).",
+        help="Mirror the recorded dataset to Hugging Face when done "
+             "(default: no upload; or set LEROBOT_HF_PUSH=1).",
     )
     return parser.parse_args()
 
@@ -1807,8 +1807,8 @@ def main() -> None:
 
         # ── Mirror the finished dataset to Hugging Face (best-effort) ──────
         # Runs after ROS/camera teardown so the upload can't interfere with
-        # shutdown. Never raises; disable with --no-push or LEROBOT_HF_PUSH=0.
-        try_sync_to_hub(root, push=not args.no_push)
+        # shutdown. Never raises; enable with --push or LEROBOT_HF_PUSH=1.
+        try_sync_to_hub(root, push=args.push)
 
 
 if __name__ == "__main__":

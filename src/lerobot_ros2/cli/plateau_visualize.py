@@ -317,54 +317,88 @@ def _build_joints_strip(
     return strip
 
 
+_SPEED_PLOT_Y_MAX = 0.01
+
+
+def _speed_plot_ticks(y_max: float) -> tuple[float, ...]:
+    """Quarter marks for the fixed speed-plot y-axis."""
+    return tuple((y_max / 4.0) * i for i in range(1, 4))
+
+
+def _format_speed_axis(value: float) -> str:
+    if value < 0.01:
+        return f"{value:.4f}"
+    if value < 0.1:
+        return f"{value:.3f}"
+    return f"{value:.2f}"
+
+
+def _speed_to_y(speed_value: float, y_max: float, strip_height: int) -> int:
+    """Map a normalized speed value onto strip row coordinates."""
+    frac = max(0.0, min(1.0, float(speed_value) / y_max))
+    return int(np.clip(strip_height - 1 - int(frac * (strip_height - 2)), 0, strip_height - 1))
+
+
 def _build_speed_strip(
     width: int,
     speed: np.ndarray,
     threshold: float,
     current_idx: int,
     strip_height: int = 80,
-    y_max: float = 0.5,
+    y_max: float = _SPEED_PLOT_Y_MAX,
 ) -> np.ndarray:
-    """Polyline of L\u221e speed ``s_t`` over the episode with a fixed y-axis.
+    """Polyline of L\u221e speed ``s_t`` on a fixed ``[0, y_max]`` axis.
 
-    Y range is ``[0, y_max]`` (default ``0.5``) so the threshold line
-    sits in the lower portion of the plot where the action is and you
-    can see whether ``s_t`` actually crosses ``tau`` frame-by-frame.
-    Anything above ``y_max`` clips at the top.
+    The red horizontal line is drawn at ``y = tau``. Speed values above
+    ``y_max`` clip at the top of the plot.
     """
     n = speed.shape[0]
     strip = np.full((strip_height, width, 3), 30, dtype=np.uint8)
     if n == 0 or width <= 0 or y_max <= 0:
         return strip
 
-    for frac in (0.25, 0.5, 0.75):
-        gy = strip_height - 1 - int(frac * (strip_height - 2))
+    def _draw_hgrid(value: float, color: tuple[int, int, int], label: str) -> None:
+        gy = _speed_to_y(value, y_max, strip_height)
         for x in range(0, width, 6):
-            cv2.line(strip, (x, gy), (x + 2, gy), (55, 55, 55), 1)
+            cv2.line(strip, (x, gy), (x + 2, gy), color, 1)
+        cv2.putText(
+            strip, label, (width - 44, max(10, min(gy + 4, strip_height - 4))),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA,
+        )
+
+    for tick in _speed_plot_ticks(y_max):
+        _draw_hgrid(tick, (55, 55, 55), _format_speed_axis(tick))
 
     pts = np.empty((width, 1, 2), dtype=np.int32)
     for x in range(width):
         f = min(int(x * n / width), n - 1)
-        v = float(speed[f]) / y_max
-        v = max(0.0, min(1.0, v))
-        y = strip_height - 1 - int(v * (strip_height - 2))
+        y = _speed_to_y(float(speed[f]), y_max, strip_height)
         pts[x, 0, 0] = x
-        pts[x, 0, 1] = int(np.clip(y, 0, strip_height - 1))
+        pts[x, 0, 1] = y
     cv2.polylines(strip, [pts], False, _GREEN, 1, cv2.LINE_AA)
 
-    thr_y = strip_height - 1 - int(min(threshold / y_max, 1.0) * (strip_height - 2))
-    thr_y = int(np.clip(thr_y, 0, strip_height - 1))
+    thr_y = _speed_to_y(threshold, y_max, strip_height)
     cv2.line(strip, (0, thr_y), (width - 1, thr_y), _RED, 1)
+    cv2.putText(
+        strip, f"tau={threshold:.4f}", (4, max(10, thr_y - 2)),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.32, _RED, 1, cv2.LINE_AA,
+    )
 
     cursor = int(round(current_idx / max(n - 1, 1) * (width - 1)))
     cv2.line(strip, (cursor, 0), (cursor, strip_height - 1), _WHITE, 1)
 
-    cv2.putText(strip, f"s_t (y: 0..{y_max:.2f})  tau={threshold:.4f}",
-                (4, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, _RED, 1, cv2.LINE_AA)
-    cv2.putText(strip, f"{y_max:.2f}", (width - 32, 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 160, 160), 1, cv2.LINE_AA)
-    cv2.putText(strip, "0.00", (width - 32, strip_height - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 160, 160), 1, cv2.LINE_AA)
+    cv2.putText(
+        strip, f"s_t  y: 0 .. {_format_speed_axis(y_max)}", (4, 12),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.36, _WHITE, 1, cv2.LINE_AA,
+    )
+    cv2.putText(
+        strip, _format_speed_axis(y_max), (width - 44, 14),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 160, 160), 1, cv2.LINE_AA,
+    )
+    cv2.putText(
+        strip, "0.0000", (width - 44, strip_height - 4),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 160, 160), 1, cv2.LINE_AA,
+    )
     return strip
 
 
@@ -389,7 +423,7 @@ def _render_episode(
     fps: int,
     out_path: Path,
     upscale: int,
-    y_max: float = 0.5,
+    y_max: float = _SPEED_PLOT_Y_MAX,
     joint_names: list[str] | None = None,
     drop_plateau: bool = False,
 ) -> int:
@@ -437,6 +471,7 @@ def _render_episode(
     tau = plateau_result.params.tau
     min_run = plateau_result.params.min_run
     margin = plateau_result.params.margin
+    plot_y_max = float(y_max)
 
     cam_keys = sorted(video_paths.keys())
     sample_tile = decoded[cam_keys[0]][0]
@@ -485,7 +520,7 @@ def _render_episode(
             )
             speed_strip = _build_speed_strip(
                 composite_w, ep_speed, tau, i,
-                strip_height=speed_h, y_max=y_max,
+                strip_height=speed_h, y_max=plot_y_max,
             )
             canvas = np.concatenate([top, timeline, joints_strip, speed_strip], axis=0)
             if up > 1:
@@ -523,12 +558,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        "only the moving frames remain. The bottom strips/plots still "
                        "show the full episode for reference."
                    ))
-    p.add_argument("--y-max", type=float, default=0.005,
-                   help=(
-                       "Fixed y-axis upper bound for the s_t plot (default: 0.5). "
-                       "Lower values zoom in on the threshold region; values "
-                       "below tau make tau land outside the plot."
-                   ))
+    p.add_argument(
+        "--y-max",
+        type=float,
+        default=_SPEED_PLOT_Y_MAX,
+        help=(
+            "Fixed y-axis upper bound for the s_t speed plot (default: 0.01). "
+            "The red tau line is drawn at y=tau on this scale; values above "
+            "y-max clip at the top. Must be greater than --tau."
+        ),
+    )
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -539,6 +578,16 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+    logging.info("Speed plot y-axis: 0 .. %s (tau=%s)", args.y_max, args.tau)
+
+    if float(args.tau) >= float(args.y_max):
+        logging.warning(
+            "--tau (%.4f) >= --y-max (%.4f); the red threshold line will clip "
+            "at the top of the speed plot.",
+            args.tau,
+            args.y_max,
+        )
 
     src = args.src.expanduser().resolve()
     if not src.is_dir():
@@ -605,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
             fps=fps,
             out_path=out,
             upscale=args.upscale,
-            y_max=float(args.y_max),
+            y_max=args.y_max,
             joint_names=joint_names or None,
             drop_plateau=args.drop_plateau,
         )

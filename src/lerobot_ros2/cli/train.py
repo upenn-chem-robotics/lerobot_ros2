@@ -12,7 +12,8 @@ For action-source / DAgger datasets use ``lerobot-ros-train-dagger`` (which has
 the same auto-push behavior).
 
 Notes:
-  * Pass ``--no-push`` to skip the upload, or set ``LEROBOT_HF_PUSH=0``.
+  * Pass ``--push`` to mirror checkpoints to HF after training, or set ``LEROBOT_HF_PUSH=1``.
+  * By default nothing is uploaded; use ``lerobot-ros-backup`` for manual backup.
   * For the backup mapping to work, point ``--output_dir`` somewhere under
     ``data/`` (e.g. ``--output_dir=data/<op>/<task>/.../deploy``). Out-of-tree
     paths (like ``outputs/...``) are skipped with a warning; back them up
@@ -35,7 +36,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.utils.import_utils import register_third_party_plugins
 
-from lerobot_ros2.hub_sync import pop_no_push_flag, try_sync_to_hub
+from lerobot_ros2.hub_sync import pop_push_flag, try_sync_to_hub
 
 # Set in main() before the draccus parser runs.
 _PUSH: bool | None = None
@@ -50,8 +51,8 @@ def _train(cfg: TrainPipelineConfig) -> None:
 
 def main() -> None:
     global _PUSH
-    # Strip --no-push before draccus sees it (it would reject the unknown flag).
-    _PUSH = False if pop_no_push_flag(sys.argv) else None
+    # Strip --push before draccus sees it (it would reject the unknown flag).
+    _PUSH = True if pop_push_flag(sys.argv) else None
     register_third_party_plugins()
     _train()
 
