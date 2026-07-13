@@ -62,7 +62,17 @@ camera_defaults:
   settings:
     auto_exposure: 1
     white_balance_automatic: 0
+    # Focal length MUST be identical across every recorded frame and every
+    # inference rollout — diffusion policy for needle insertion needs mm-level
+    # positional consistency, and any focus/zoom drift silently corrupts the
+    # image geometry. These two controls kill both sources of drift for ALL
+    # cameras: continuous autofocus (focus breathing that looks like zooming)
+    # and any optical/digital zoom. Per-camera `focus_absolute` (below) then
+    # pins the fixed focus distance. apply_v4l2_settings() writes the auto
+    # gates first, then reads everything back and aborts recording if a value
+    # did not stick, so a camera can never silently record on auto.
     focus_automatic_continuous: 0
+    zoom_absolute: 0
     # backlight_compensation: 0
     exposure_time_absolute: 100
     white_balance_temperature: 4000
@@ -75,15 +85,20 @@ camera_defaults:
     hue: 50
     pan_absolute: 0
     tilt_absolute: 0
-    zoom_absolute: 0
     pan_speed: 0
     tilt_speed: 0
 
 
 left_cameras:
   left_wrist_top:
-    port: /dev/video1
+    port: /dev/video3
     settings:
+      # Autofocus + zoom are disabled via camera_defaults; this pins the fixed
+      # focus distance. Tune this integer (typically 0-255) until the target is
+      # tack-sharp at the working distance, then never change it between record
+      # and deploy.
+      focus_automatic_continuous: 0
+      zoom_absolute: 0
       focus_absolute: 100
   # left_wrist_bottom:
   #   port: /dev/video9
@@ -94,6 +109,8 @@ right_cameras:
   right_wrist_top:
     port: /dev/video0
     settings:
+      focus_automatic_continuous: 0
+      zoom_absolute: 0
       focus_absolute: 100
 #   # right_wrist_bottom:
 #   #   port: /dev/video12
@@ -104,9 +121,17 @@ other_cameras:
   #   settings:
   #     focus_absolute: 20
   front:
-    port: /dev/video3
+    port: /dev/video2
     settings:
-      focus_absolute: 20
+      # Front cam was the one observed auto-zooming during recording. Lock the
+      # autofocus + zoom explicitly here (belt-and-suspenders with the shared
+      # defaults) and pin a fixed focus. IMPORTANT: tune `focus_absolute` until
+      # the septum/needle is perfectly sharp at your working distance — the
+      # value that is sharp for the wrist cams is unlikely to match the front
+      # cam's distance.
+      focus_automatic_continuous: 0
+      zoom_absolute: 0
+      focus_absolute: 100
   # back:
   #   port: /dev/video8
   #   settings:

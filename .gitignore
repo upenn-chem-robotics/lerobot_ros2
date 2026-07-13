@@ -17,3 +17,6 @@ dist/
 
 # Models / outputs
 outputs/
+
+# Vendored OBSBOT Meet SE CLI (bundles OBSBOT's proprietary SDK — do not commit)
+third_party/

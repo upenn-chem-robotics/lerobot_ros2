@@ -1,0 +1,210 @@
+camera: front
+port: /dev/video2
+index: 0
+controls:
+  brightness:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 50
+    value: 50
+  contrast:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 50
+    value: 50
+  saturation:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 50
+    value: 50
+  hue:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 50
+    value: 50
+  white_balance_automatic:
+    type: bool
+    default: 1
+    value: 0
+  red_balance:
+    type: int
+    min: 0
+    max: 2048
+    step: 1
+    default: 1024
+    value: 1164
+  blue_balance:
+    type: int
+    min: 0
+    max: 2048
+    step: 1
+    default: 1024
+    value: 1248
+  gain:
+    type: int
+    min: 1
+    max: 128
+    step: 1
+    default: 1
+    value: 1
+  power_line_frequency:
+    type: menu
+    min: 0
+    max: 2
+    default: 3
+    value: 1
+    current_label: 50 Hz
+    options:
+      0: Disabled
+      1: 50 Hz
+      2: 60 Hz
+  white_balance_temperature:
+    type: int
+    min: 2000
+    max: 10000
+    step: 100
+    default: 5000
+    value: 4000
+  sharpness:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 50
+    value: 50
+  backlight_compensation:
+    type: int
+    min: 0
+    max: 18
+    step: 1
+    default: 9
+    value: 9
+  auto_exposure:
+    type: menu
+    min: 0
+    max: 3
+    default: 0
+    value: 1
+    current_label: Manual Mode
+    options:
+      0: Auto Mode
+      1: Manual Mode
+      3: Aperture Priority Mode
+  exposure_time_absolute:
+    type: int
+    min: 1
+    max: 2500
+    step: 1
+    default: 330
+    value: 100
+  pan_absolute:
+    type: int
+    min: -648000
+    max: 648000
+    step: 3600
+    default: 0
+    value: 0
+  tilt_absolute:
+    type: int
+    min: -648000
+    max: 648000
+    step: 3600
+    default: 0
+    value: 0
+  focus_absolute:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 0
+    value: 20
+  focus_automatic_continuous:
+    type: bool
+    default: 1
+    value: 0
+  zoom_absolute:
+    type: int
+    min: 0
+    max: 12
+    step: 1
+    default: 0
+    value: 0
+  zoom_continuous:
+    type: int
+    min: 0
+    max: 100
+    step: 1
+    default: 100
+    value: 245
+  pan_speed:
+    type: int
+    min: -5
+    max: 30
+    step: 1
+    default: 20
+    value: 0
+  tilt_speed:
+    type: int
+    min: -5
+    max: 30
+    step: 1
+    default: 20
+    value: 0
+formats:
+- fourcc: MJPG
+  description: Motion-JPEG, compressed
+  sizes:
+  - width: 1920
+    height: 1080
+    fps:
+    - 100.0
+    - 60.0
+    - 59.94
+    - 50.0
+    - 30.0
+    - 29.97
+    - 25.0
+    - 24.0
+    - 20.0
+    - 15.0
+  - width: 1280
+    height: 720
+    fps:
+    - 150.0
+    - 120.0
+    - 60.0
+    - 59.94
+    - 50.0
+    - 30.0
+    - 29.97
+    - 25.0
+    - 24.0
+    - 20.0
+    - 15.0
+- fourcc: YUYV
+  description: YUYV 4:2:2
+  sizes:
+  - width: 640
+    height: 360
+    fps:
+    - 30.0
+    - 25.0
+    - 24.0
+    - 20.0
+    - 15.0
+  - width: 640
+    height: 480
+    fps:
+    - 30.0
+    - 25.0
+    - 24.0
+    - 20.0
+    - 15.0

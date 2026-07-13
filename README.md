@@ -57,6 +57,36 @@ lerobot-ros-record --config /path/to/gello.yaml ...
 There is no filesystem default — the installed package does not know where
 your config lives.
 
+## Cameras (OBSBOT Meet SE — disable AI auto-framing)
+
+Standard v4l2 controls (autofocus, `zoom_absolute`, exposure, white balance)
+are pinned per camera in `config/gello.yaml` and applied + verified at record /
+deploy time (see `apply_v4l2_settings` in `helper.py`). Snapshot the current
+controls with `lerobot-ros-probe-cameras`.
+
+If your cameras are **OBSBOT Meet SE** units, their **AI auto-framing / gesture
+zoom is not a v4l2 control** — it drives an internal `zoom_continuous` and makes
+the image zoom in/out as objects move near the lens, which quietly corrupts the
+image geometry a diffusion policy needs for mm-accurate tasks. It must be turned
+off through OBSBOT's SDK:
+
+```bash
+# 1. One-time: build the OBSBOT control CLI (needs Rust+libclang, or Nix)
+scripts/setup_obsbot_cli.sh
+export OBSBOT_CLI=third_party/obsbot-meetse-cli/target/release/obsbot-cli
+
+# 2. At the start of every session (cameras plugged in), before record/deploy:
+scripts/obsbot_lock_cameras.sh            # auto-framing off, HDR off, zoom 1.0x
+scripts/obsbot_lock_cameras.sh --focus 35 # also pin manual focus on every cam
+```
+
+The lock script hits every detected OBSBOT device by serial, so it needs no
+per-camera mapping. Verify a camera stays put while you move the gripper:
+
+```bash
+watch -n0.5 'v4l2-ctl -d /dev/video2 --get-ctrl=zoom_continuous,zoom_absolute'
+```
+
 ## Console entry points
 
 | Command                | Description                                 |
@@ -117,13 +147,15 @@ rm -rf data/rama/dose_solid
 
 ### Automatic upload going forward
 
+By default, **nothing** is uploaded automatically. Use `lerobot-ros-backup` for
+manual backup, or pass `--push` (or set `LEROBOT_HF_PUSH=1`) on
 `lerobot-ros-record`, `lerobot-ros-dagger`, `lerobot-ros-train` and
-`lerobot-ros-train-dagger` automatically mirror their output folder to the
-matching repo when they finish. The push is best-effort (it never fails the
-run; on error it prints the `lerobot-ros-backup ...` command to retry).
+`lerobot-ros-train-dagger` to mirror output when a run finishes. The push is
+best-effort (it never fails the run; on error it prints the
+`lerobot-ros-backup ...` command to retry).
 
-- Skip a single run with `--no-push`.
-- Disable globally with `LEROBOT_HF_PUSH=0`.
+- Enable for a single run with `--push`.
+- Enable globally with `LEROBOT_HF_PUSH=1`.
 - For training auto-backup to work, point `--output_dir` somewhere under
   `data/` (e.g. `--output_dir=data/<op>/<task>/.../deploy`). Plain upstream
   `lerobot-train` does **not** auto-push; use `lerobot-ros-train` (same flags)
