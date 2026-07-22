@@ -14,6 +14,8 @@ Controls (keyboard):
     s — start / stop episode
     d — discard / reset (discard while recording, reset while idle)
     m — cycle GELLO mode (NORMAL -> ROTATE_CW -> ROTATE_CCW)
+        In ROTATE_CW/ROTATE_CCW only the `rotation_arm` from the config rotates
+        wrist_3; every other arm is frozen (holds all joints) until NORMAL.
     q — quit and finalize dataset
     r — reset while idle
 
@@ -341,15 +343,33 @@ class GelloControlModeClient:
     MODE_COUNTERCLOCKWISE = 3
     _VALID_MODES = {MODE_IDLE, MODE_NORMAL, MODE_CLOCKWISE, MODE_COUNTERCLOCKWISE}
 
-    def __init__(self, node: "Node", service_names: List[str], default_mode: int = MODE_NORMAL) -> None:
+    def __init__(
+        self,
+        node: "Node",
+        service_names: List[str],
+        default_mode: int = MODE_NORMAL,
+        rotation_services: Optional[List[str]] = None,
+    ) -> None:
         self._node = node
         self._clients = {
             name: node.create_client(SetParametersSrv, name)
             for name in service_names
         }
         self._mode = default_mode
+        # Services belonging to the arm that actually performs the wrist_3
+        # rotation in ROTATE_CW / ROTATE_CCW. Every other arm is frozen (IDLE)
+        # while rotating and resumes NORMAL follow once the mode returns to
+        # NORMAL. Empty => legacy behaviour (all arms rotate together).
+        self._rotation_services = set(rotation_services or [])
         if service_names:
             logging.info("GELLO control_mode services: %s", service_names)
+            if self._rotation_services:
+                frozen = [n for n in service_names if n not in self._rotation_services]
+                logging.info(
+                    "GELLO rotation restricted to %s; freezing %s during ROTATE_CW/ROTATE_CCW",
+                    sorted(self._rotation_services),
+                    frozen,
+                )
         else:
             logging.warning("No GELLO control_mode services configured; mode changes are no-ops")
 
@@ -377,6 +397,21 @@ class GelloControlModeClient:
             return cls.MODE_COUNTERCLOCKWISE
         return cls.MODE_NORMAL
 
+    def _target_modes(self, mode: int) -> Dict[str, int]:
+        """Per-service control_mode to request for the given logical mode.
+
+        For NORMAL / IDLE every arm gets the same mode. For the rotation modes
+        (CW / CCW), only the configured rotation arm(s) rotate; every other arm
+        is frozen (IDLE) so it holds all joints — including wrist_3 — in place.
+        """
+        is_rotation = mode in (self.MODE_CLOCKWISE, self.MODE_COUNTERCLOCKWISE)
+        if is_rotation and self._rotation_services:
+            return {
+                name: (mode if name in self._rotation_services else self.MODE_IDLE)
+                for name in self._clients
+            }
+        return {name: mode for name in self._clients}
+
     def set_mode(self, mode: int, label: str = "") -> None:
         if mode not in self._VALID_MODES:
             raise ValueError(f"Unsupported control mode: {mode}")
@@ -386,19 +421,28 @@ class GelloControlModeClient:
             logging.warning("[%s] control_mode -> %s (no services configured)", label, self.mode_label(mode))
             return
 
-        request = SetParametersSrv.Request()
-        request.parameters = [
-            Parameter(
-                name="control_mode",
-                value=ParameterValue(
-                    type=ParameterType.PARAMETER_INTEGER,
-                    integer_value=int(mode),
-                ),
-            )
-        ]
+        targets = self._target_modes(mode)
 
         all_ok = True
         for name, client in self._clients.items():
+            svc_mode = targets[name]
+            request = SetParametersSrv.Request()
+            request.parameters = [
+                Parameter(
+                    name="control_mode",
+                    value=ParameterValue(
+                        type=ParameterType.PARAMETER_INTEGER,
+                        integer_value=int(svc_mode),
+                    ),
+                )
+            ]
+
+            if svc_mode != mode:
+                logging.info(
+                    "[%s] %s: freezing at %s while %s active",
+                    label, name, self.mode_label(svc_mode), self.mode_label(mode),
+                )
+
             if not client.service_is_ready():
                 logging.info("Waiting for service %s...", name)
                 client.wait_for_service()
@@ -435,6 +479,42 @@ class GelloControlModeClient:
 def resolve_control_mode_services(services_cfg: dict) -> List[str]:
     configured = services_cfg.get("control_mode") or []
     return list(configured)
+
+
+def resolve_rotation_arm(cfg: dict) -> Optional[str]:
+    """Arm name that performs wrist_3 rotation in ROTATE_CW/ROTATE_CCW.
+
+    Returns ``None`` (rotate every arm together — legacy behaviour) when the
+    top-level ``rotation_arm`` key is absent, null, or blank.
+    """
+    value = cfg.get("rotation_arm")
+    if value is None:
+        return None
+    name = str(value).strip()
+    return name or None
+
+
+def resolve_rotation_services(
+    rotation_arm: Optional[str],
+    control_mode_services: List[str],
+) -> List[str]:
+    """control_mode services whose arm should keep rotating in CW/CCW modes.
+
+    Matches the rotation arm name against each service path (e.g. ``left``
+    matches ``/left_gello_offset_node/set_parameters``). An empty result means
+    every arm rotates together.
+    """
+    if not rotation_arm:
+        return []
+    token = rotation_arm.lower()
+    matched = [s for s in control_mode_services if token in s.lower()]
+    if not matched:
+        logging.warning(
+            "rotation_arm=%r did not match any control_mode service (%s); "
+            "all arms will rotate together",
+            rotation_arm, control_mode_services,
+        )
+    return matched
 
 
 def resolve_transition_ready_services(services_cfg: dict, control_mode_services: List[str]) -> List[str]:
@@ -1243,7 +1323,11 @@ def main() -> None:
     control_mode_services = resolve_control_mode_services(svc_cfg)
     transition_ready_services = resolve_transition_ready_services(svc_cfg, control_mode_services)
     reset_service_names = resolve_reset_services(svc_cfg)
-    control_mode_client = GelloControlModeClient(node, control_mode_services)
+    rotation_arm = resolve_rotation_arm(cfg)
+    rotation_services = resolve_rotation_services(rotation_arm, control_mode_services)
+    control_mode_client = GelloControlModeClient(
+        node, control_mode_services, rotation_services=rotation_services
+    )
     transition_ready_client = GelloTransitionReadyClient(node, transition_ready_services)
     reset_service_client = ResetServiceClient(node, reset_service_names)
     reset_request_client = ResetRequestClient(node, ["/reset"]) if use_reset_client else None
