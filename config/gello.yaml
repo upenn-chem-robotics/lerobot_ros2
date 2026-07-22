@@ -18,6 +18,15 @@ services:
     - "/left_gello_offset_node/wait_for_mode_transition"
     - "/right_gello_offset_node/wait_for_mode_transition"
 
+# In ROTATE_CW / ROTATE_CCW mode (foot pedal RIGHT / keyboard 'm'), only this
+# arm rotates wrist_3 via its Gello gripper. Every other arm is frozen in place
+# (holds ALL joints, including wrist_3) for the duration of the rotation, then
+# resumes NORMAL Gello follow as soon as the mode cycles back to NORMAL. The
+# name is matched against each control_mode service path above, so "left"
+# selects "/left_gello_offset_node/set_parameters". Set to null (or remove this
+# key) to rotate every arm together — the legacy behaviour.
+rotation_arm: left
+
 use_reset_client: false
 
 # Joints whose raw /joint_states readings may drift by multiples of 2π across
@@ -91,7 +100,7 @@ camera_defaults:
 
 left_cameras:
   left_wrist_top:
-    port: /dev/video3
+    port: /dev/video4
     settings:
       # Autofocus + zoom are disabled via camera_defaults; this pins the fixed
       # focus distance. Tune this integer (typically 0-255) until the target is
@@ -107,7 +116,7 @@ left_cameras:
 
 right_cameras:
   right_wrist_top:
-    port: /dev/video0
+    port: /dev/video1
     settings:
       focus_automatic_continuous: 0
       zoom_absolute: 0
@@ -121,7 +130,7 @@ other_cameras:
   #   settings:
   #     focus_absolute: 20
   front:
-    port: /dev/video2
+    port: /dev/video3
     settings:
       # Front cam was the one observed auto-zooming during recording. Lock the
       # autofocus + zoom explicitly here (belt-and-suspenders with the shared
@@ -131,7 +140,7 @@ other_cameras:
       # cam's distance.
       focus_automatic_continuous: 0
       zoom_absolute: 0
-      focus_absolute: 100
+      focus_absolute: 20
   # back:
   #   port: /dev/video8
   #   settings:
