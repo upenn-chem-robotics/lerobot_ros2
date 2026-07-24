@@ -1017,6 +1017,15 @@ def recording_loop(
 
     arm_states_by_key: Dict[str, Optional[ArmState]] = {"left": state_left, "right": state_right}
 
+    # Live freeze watchdog: track per-camera stale state so the operator gets a
+    # loud, rate-limited alert if any feed stops changing mid-episode. This also
+    # covers the case where a camera's read thread is fully hung inside
+    # cap.read() (it can't log for itself then), and counts how many frozen
+    # frames were written so a bad episode can be spotted and re-done.
+    cam_frozen_state: List[bool] = [False] * len(cameras)
+    cam_frozen_frames: List[int] = [0] * len(cameras)
+    freeze_threshold_s = max(0.5, 3.0 / hz)
+
     while not stop_event.is_set():
         t_start = time.monotonic()
 
@@ -1035,6 +1044,8 @@ def recording_loop(
                 if frames_in_episode == 0:
                     stabilizer.reset()
                     wrap_manager.reset_episode()
+                    cam_frozen_frames = [0] * len(cameras)
+                    cam_frozen_state = [False] * len(cameras)
 
                 processed: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
                 for arm_key, (action, state) in snapshots.items():
@@ -1057,6 +1068,24 @@ def recording_loop(
                     "observation.state": np.concatenate(state_parts),
                 }
                 raw_frames = [cam.get_frame() for cam in cameras]
+                for ci, cam in enumerate(cameras):
+                    stale_for = cam.seconds_since_change()
+                    if stale_for >= freeze_threshold_s:
+                        cam_frozen_frames[ci] += 1
+                        if not cam_frozen_state[ci]:
+                            cam_frozen_state[ci] = True
+                            logging.warning(
+                                "FROZEN CAMERA during recording: %s (%s) — no new frame "
+                                "for %.1fs. Recorded frames are DUPLICATES; this episode "
+                                "should likely be discarded and re-recorded.",
+                                cam.name or cam.display_label, cam.device, stale_for,
+                            )
+                    elif cam_frozen_state[ci]:
+                        cam_frozen_state[ci] = False
+                        logging.warning(
+                            "Camera %s (%s) recovered after ~%d frozen frame(s) this episode",
+                            cam.name or cam.display_label, cam.device, cam_frozen_frames[ci],
+                        )
                 stabilized = stabilizer.process(raw_frames)
                 for ci, cam in enumerate(cameras):
                     bgr = stabilized[ci]

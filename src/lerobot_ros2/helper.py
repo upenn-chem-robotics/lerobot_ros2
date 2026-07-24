@@ -623,12 +623,100 @@ class CameraReader:
                 ", ".join(f"{k}={v}" for k, v in self.applied_settings.items()),
             )
 
+        self._width_req = width
+        self._height_req = height
+
         self._frame: Optional[np.ndarray] = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
+
+        # Freeze / staleness tracking. `_last_change_monotonic` is the last time
+        # the frame *content* actually changed — this is the truest measure of a
+        # camera freeze, because it catches both read() failures (last frame held
+        # forever) and drivers that keep handing back an identical buffer with
+        # ret=True. A cheap sub-sampled signature is used to detect duplicates;
+        # real sensor noise guarantees consecutive live frames never match, so a
+        # repeated signature reliably means the feed is frozen.
+        now = time.monotonic()
+        self._last_change_monotonic = now
+        self._last_read_ok_monotonic = now
+        self._last_signature: Optional[int] = None
+        self._consecutive_failures = 0
+        # How long a feed may stay unchanged before we warn + attempt recovery.
+        self._stale_after_s = 1.0
+        # How long between reopen attempts once a camera is considered frozen.
+        self._reopen_interval_s = 2.0
+        self._last_reopen_monotonic = 0.0
+
         self._thread = threading.Thread(
             target=self._read_loop, daemon=True, name=f"cam_{self.index}"
         )
+
+    @staticmethod
+    def _frame_signature(frame: np.ndarray) -> int:
+        """Cheap content signature of a frame for duplicate/freeze detection.
+
+        Sub-samples a small grid so this stays trivial at camera frame rates.
+        Live frames always differ (sensor noise); an identical signature across
+        consecutive reads means the feed is frozen.
+        """
+        sample = frame[::16, ::16]
+        return hash(sample.tobytes())
+
+    def _open_capture(self) -> "cv2.VideoCapture":
+        cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError(f"Could not open camera at {self.device}")
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width_req)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height_req)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def _reopen(self) -> bool:
+        """Tear down and re-open the V4L2 device to recover from a freeze.
+
+        Re-applies the pinned v4l2 settings (focus/exposure/etc.) because a
+        reopen resets them to auto — silently drifting focus would corrupt the
+        dataset just as badly as a frozen frame.
+        """
+        self._last_reopen_monotonic = time.monotonic()
+        logging.warning(
+            "Camera[%s] %s @ %s — attempting reopen to recover from freeze",
+            self.index, self.name or "(unnamed)", self.device,
+        )
+        try:
+            self._cap.release()
+        except Exception:
+            pass
+        time.sleep(0.1)
+        try:
+            cap = self._open_capture()
+        except Exception as exc:
+            logging.warning(
+                "Camera[%s] %s @ %s — reopen failed: %s",
+                self.index, self.name or "(unnamed)", self.device, exc,
+            )
+            return False
+        self._cap = cap
+        if self.requested_settings:
+            try:
+                self.applied_settings = apply_v4l2_settings(self.device, self.requested_settings)
+            except Exception:
+                logging.exception(
+                    "Camera[%s] %s @ %s — failed to re-apply v4l2 settings after reopen; "
+                    "focus/exposure may have reset",
+                    self.index, self.name or "(unnamed)", self.device,
+                )
+        now = time.monotonic()
+        self._consecutive_failures = 0
+        self._last_read_ok_monotonic = now
+        self._last_change_monotonic = now
+        logging.warning(
+            "Camera[%s] %s @ %s — reopened", self.index, self.name or "(unnamed)", self.device,
+        )
+        return True
 
     @staticmethod
     def _derive_index(device: str) -> int:
@@ -640,15 +728,68 @@ class CameraReader:
         self._thread.start()
 
     def _read_loop(self) -> None:
+        stale_warned = False
         while not self._stop.is_set():
-            ret, frame = self._cap.read()
-            if ret:
+            try:
+                ret, frame = self._cap.read()
+            except Exception:
+                ret, frame = False, None
+
+            now = time.monotonic()
+
+            if ret and frame is not None:
+                self._last_read_ok_monotonic = now
+                self._consecutive_failures = 0
                 with self._lock:
                     self._frame = frame
+                # Track content changes to catch "ret=True but identical buffer"
+                # freezes, not just read failures.
+                sig = self._frame_signature(frame)
+                if sig != self._last_signature:
+                    self._last_signature = sig
+                    self._last_change_monotonic = now
+                    if stale_warned:
+                        logging.warning(
+                            "Camera[%s] %s @ %s — feed recovered, frames changing again",
+                            self.index, self.name or "(unnamed)", self.device,
+                        )
+                        stale_warned = False
+            else:
+                self._consecutive_failures += 1
+                # Failed reads would otherwise busy-spin and starve a marginal
+                # USB link; back off briefly.
+                time.sleep(0.005)
+
+            stale_for = now - self._last_change_monotonic
+            if stale_for >= self._stale_after_s:
+                if not stale_warned:
+                    logging.warning(
+                        "Camera[%s] %s @ %s FROZEN: no new frame content for %.1fs "
+                        "(%d consecutive read failures) — recorded frames are DUPLICATES "
+                        "until it recovers; consider discarding this episode",
+                        self.index, self.name or "(unnamed)", self.device,
+                        stale_for, self._consecutive_failures,
+                    )
+                    stale_warned = True
+                if now - self._last_reopen_monotonic >= self._reopen_interval_s:
+                    self._reopen()
 
     def get_frame(self) -> Optional[np.ndarray]:
         with self._lock:
             return self._frame.copy() if self._frame is not None else None
+
+    def seconds_since_change(self) -> float:
+        """Seconds since the frame content last changed (0 if never received).
+
+        This advances even when the read thread is fully hung inside cap.read(),
+        so external consumers (e.g. the recording loop) can detect a freeze that
+        the read thread itself cannot report.
+        """
+        return time.monotonic() - self._last_change_monotonic
+
+    def is_frozen(self, max_age_s: Optional[float] = None) -> bool:
+        threshold = self._stale_after_s if max_age_s is None else max_age_s
+        return self.seconds_since_change() >= threshold
 
     def stop(self) -> None:
         self._stop.set()
