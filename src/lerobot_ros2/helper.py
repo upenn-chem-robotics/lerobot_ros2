@@ -647,6 +647,12 @@ class CameraReader:
         # How long between reopen attempts once a camera is considered frozen.
         self._reopen_interval_s = 2.0
         self._last_reopen_monotonic = 0.0
+        # A dead/unplugged camera can never be reopened; count consecutive
+        # reopen failures so the recorder can bail out and save gracefully
+        # instead of writing an endless stream of duplicate frames.
+        self._consecutive_reopen_failures = 0
+        self._max_reopen_failures = 5
+        self._unrecoverable = threading.Event()
 
         self._thread = threading.Thread(
             target=self._read_loop, daemon=True, name=f"cam_{self.index}"
@@ -694,12 +700,26 @@ class CameraReader:
         try:
             cap = self._open_capture()
         except Exception as exc:
+            self._consecutive_reopen_failures += 1
             logging.warning(
-                "Camera[%s] %s @ %s — reopen failed: %s",
-                self.index, self.name or "(unnamed)", self.device, exc,
+                "Camera[%s] %s @ %s — reopen failed (%d/%d): %s",
+                self.index, self.name or "(unnamed)", self.device,
+                self._consecutive_reopen_failures, self._max_reopen_failures, exc,
             )
+            if (
+                not self._unrecoverable.is_set()
+                and self._consecutive_reopen_failures >= self._max_reopen_failures
+            ):
+                logging.error(
+                    "Camera[%s] %s @ %s — unrecoverable after %d failed reopen "
+                    "attempts; the device appears gone (unplugged/crashed)",
+                    self.index, self.name or "(unnamed)", self.device,
+                    self._consecutive_reopen_failures,
+                )
+                self._unrecoverable.set()
             return False
         self._cap = cap
+        self._consecutive_reopen_failures = 0
         if self.requested_settings:
             try:
                 self.applied_settings = apply_v4l2_settings(self.device, self.requested_settings)
@@ -790,6 +810,15 @@ class CameraReader:
     def is_frozen(self, max_age_s: Optional[float] = None) -> bool:
         threshold = self._stale_after_s if max_age_s is None else max_age_s
         return self.seconds_since_change() >= threshold
+
+    def is_unrecoverable(self) -> bool:
+        """True once the device has failed to reopen too many times in a row.
+
+        Signals that the camera is physically gone (unplugged/crashed) and will
+        never come back on its own, so consumers should stop and save rather
+        than keep recording duplicate frames forever.
+        """
+        return self._unrecoverable.is_set()
 
     def stop(self) -> None:
         self._stop.set()

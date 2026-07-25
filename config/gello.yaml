@@ -101,7 +101,7 @@ camera_defaults:
 
 left_cameras:
   left_wrist_top:
-    port: /dev/video4
+    port: /dev/video0
     settings:
       # Autofocus + zoom are disabled via camera_defaults; this pins the fixed
       # focus distance. Tune this integer (typically 0-255) until the target is

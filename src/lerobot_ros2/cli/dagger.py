@@ -113,6 +113,7 @@ from lerobot_ros2.cli.record import (
     ResetRequestClient,
     ResetServiceClient,
     UserCommandExecutor,
+    _resolve_existing_dataset_dir,
     resolve_control_mode_services,
     resolve_reset_services,
     resolve_transition_ready_services,
@@ -823,7 +824,6 @@ def main() -> None:
     main_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
 
     # ── Dataset path / resume ───────────────────────────────────────────
-    import shutil
     root = Path("data") / f"{args.name}_dagger"
     repo_id = f"ur_robotiq/{args.name}_dagger"
     n_threads = max(4 * len(cameras), 4)
@@ -837,9 +837,10 @@ def main() -> None:
             _can_resume = _info.get("total_episodes", 0) > 0
         except (json.JSONDecodeError, KeyError):
             pass
+    # NEVER silently wipe an existing dataset. If it can't be resumed, preserve
+    # recorded episodes by default and only delete after explicit confirmation.
     if not _can_resume and root.exists():
-        shutil.rmtree(root)
-        logging.info("Removed incomplete dataset at %s", root)
+        _resolve_existing_dataset_dir(root)
 
     recording_stats = RecordingStats.load(stats_path) if _can_resume else RecordingStats()
 

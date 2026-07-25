@@ -1005,6 +1005,7 @@ def recording_loop(
     resolution: Optional[Tuple[int, int]] = None,
     stabilizer: Optional[CameraStabilizer] = None,
     wrap_manager: Optional[WrapJointManager] = None,
+    camera_failure: Optional[threading.Event] = None,
 ) -> None:
     record_h, record_w = resolution if resolution else (None, None)
     period = 1.0 / hz
@@ -1028,6 +1029,21 @@ def recording_loop(
 
     while not stop_event.is_set():
         t_start = time.monotonic()
+
+        # A camera that can never be reopened (unplugged/crashed) would otherwise
+        # keep the loop alive writing duplicate frames indefinitely. Bail out and
+        # let main()'s teardown save the in-progress episode and finalize.
+        dead_cam = next((c for c in cameras if c.is_unrecoverable()), None)
+        if dead_cam is not None:
+            logging.error(
+                "Camera %s (%s) is unrecoverable — stopping recording and saving "
+                "what we have.",
+                dead_cam.name or dead_cam.display_label, dead_cam.device,
+            )
+            if camera_failure is not None:
+                camera_failure.set()
+            stop_event.set()
+            break
 
         if recording_state.is_recording and not recording_state.is_capture_paused:
             snapshots: Dict[str, Tuple[Optional[np.ndarray], Optional[np.ndarray]]] = {}
@@ -1239,6 +1255,145 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# ── Dataset-safety helpers ─────────────────────────────────────────────────
+
+def _dataset_has_episode_data(root: Path) -> bool:
+    """Return True if ``root`` holds real recorded episodes on disk.
+
+    This looks for actual parquet/video files under ``data/`` and ``videos/``
+    rather than trusting ``meta/info.json``. A session that crashed before
+    ``finalize()`` leaves episodes on disk while ``info.json`` still reports
+    ``total_episodes: 0`` — those must never be treated as disposable.
+    """
+    for sub in ("data", "videos"):
+        base = root / sub
+        if base.exists():
+            for path in base.rglob("*"):
+                if path.is_file():
+                    return True
+    return False
+
+
+def _describe_dataset_dir(root: Path) -> str:
+    """Human-readable one-line summary of what lives under ``root``."""
+    n_files = 0
+    total_bytes = 0
+    for path in root.rglob("*"):
+        if path.is_file():
+            n_files += 1
+            try:
+                total_bytes += path.stat().st_size
+            except OSError:
+                pass
+    mb = total_bytes / (1024 * 1024)
+    return f"{n_files} file(s), {mb:.1f} MB"
+
+
+def _timestamped_backup_path(root: Path) -> Path:
+    """A sibling path like ``<root>.bak-YYYYmmdd-HHMMSS`` that does not exist."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    candidate = root.with_name(f"{root.name}.bak-{stamp}")
+    suffix = 1
+    while candidate.exists():
+        candidate = root.with_name(f"{root.name}.bak-{stamp}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def _resolve_existing_dataset_dir(root: Path) -> None:
+    """Make ``root`` safe for a fresh ``LeRobotDataset.create`` WITHOUT ever
+    destroying data behind the user's back.
+
+    Called only when ``root`` exists but cannot be resumed. Guarantees:
+      * Real recorded episodes are NEVER deleted without an explicit, typed
+        confirmation from the user.
+      * The default / non-interactive action is non-destructive: the existing
+        folder is moved aside to a timestamped backup, never overwritten.
+
+    Raises ``SystemExit`` if the user chooses to abort.
+    """
+    import shutil
+
+    has_data = _dataset_has_episode_data(root)
+    summary = _describe_dataset_dir(root)
+    interactive = sys.stdin.isatty()
+
+    if not has_data:
+        # Only a skeleton (meta/ + config, no episodes). Nothing recorded is at
+        # risk, but we still refuse to overwrite: move it aside so the new run
+        # starts clean while the old skeleton is preserved.
+        backup = _timestamped_backup_path(root)
+        shutil.move(str(root), str(backup))
+        logging.warning(
+            "Existing dataset at %s had no recorded episodes (%s); moved it "
+            "aside to %s and starting fresh (nothing was deleted).",
+            root, summary, backup,
+        )
+        return
+
+    # ── There IS real recorded data here that we cannot resume. ──
+    logging.error(
+        "Dataset directory %s already contains recorded episodes (%s) but its "
+        "meta/info.json does not mark it as resumable (likely a session that "
+        "crashed before finalizing).",
+        root, summary,
+    )
+
+    if not interactive:
+        # Never delete data in a non-interactive context. Preserve everything
+        # by moving it aside, then start fresh.
+        backup = _timestamped_backup_path(root)
+        shutil.move(str(root), str(backup))
+        logging.warning(
+            "Non-interactive session: preserved the existing data by moving it "
+            "to %s instead of deleting it. Starting a fresh dataset at %s. "
+            "Inspect the backup to recover those episodes.",
+            backup, root,
+        )
+        return
+
+    print()
+    print("=" * 72)
+    print(f"  EXISTING RECORDED DATA FOUND AT: {root}")
+    print(f"  Contents: {summary}")
+    print("  This data cannot be auto-resumed. Choose what to do:")
+    print()
+    print("    [k] KEEP it — move aside to a timestamped backup, start fresh")
+    print("        (recommended, non-destructive; default)")
+    print("    [d] DELETE it permanently, then start fresh")
+    print("    [a] ABORT (do nothing)")
+    print("=" * 72)
+
+    while True:
+        try:
+            choice = input("Your choice [k/d/a] (default: k): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit("Aborted; existing data left untouched.")
+
+        if choice in ("", "k", "keep"):
+            backup = _timestamped_backup_path(root)
+            shutil.move(str(root), str(backup))
+            logging.warning("Moved existing data to %s; starting fresh at %s.", backup, root)
+            return
+
+        if choice in ("d", "delete"):
+            confirm = input(
+                f"Type the dataset name '{root.name}' to permanently delete it: "
+            ).strip()
+            if confirm != root.name:
+                print("Names did not match; nothing deleted. Choose again.")
+                continue
+            shutil.rmtree(root)
+            logging.warning("Permanently deleted %s at user's request.", root)
+            return
+
+        if choice in ("a", "abort", "q", "quit"):
+            sys.exit("Aborted; existing data left untouched.")
+
+        print("Unrecognized choice. Enter 'k', 'd', or 'a'.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1316,7 +1471,6 @@ def main() -> None:
     logging.info(f"{len(cameras)} camera(s) active")
 
     arm_labels = arm_keys  # used for feature naming
-    import shutil
 
     root = Path("data") / args.name
     repo_id = f"ur_robotiq/{args.name}"
@@ -1331,9 +1485,11 @@ def main() -> None:
             _can_resume = _info.get("total_episodes", 0) > 0
         except (json.JSONDecodeError, KeyError):
             pass
+    # NEVER silently wipe an existing dataset. If it can't be resumed, hand off
+    # to _resolve_existing_dataset_dir, which preserves recorded episodes by
+    # default and only deletes after an explicit, typed confirmation.
     if not _can_resume and root.exists():
-        shutil.rmtree(root)
-        logging.info(f"Removed incomplete dataset at {root}")
+        _resolve_existing_dataset_dir(root)
 
     recording_stats = RecordingStats.load(stats_path) if _can_resume else RecordingStats()
 
@@ -1454,6 +1610,9 @@ def main() -> None:
 
     # ── Shared state ─────────────────────────────────────────────────────
     stop_event = threading.Event()
+    # Set by the recording thread when a camera dies and cannot be reopened;
+    # lets the visualizer flash a big "CAM STUCK" banner before we exit+save.
+    camera_failure = threading.Event()
 
     # ── Shutdown handler ─────────────────────────────────────────────────
     # The lock prevents two signals delivered in quick succession (e.g. the
@@ -1694,6 +1853,7 @@ def main() -> None:
                 args.resolution,
                 record_stabilizer,
                 wrap_manager,
+                camera_failure,
             ),
             name="recording",
             daemon=True,
@@ -1725,6 +1885,34 @@ def main() -> None:
             def _draw_record_overlay(canvas: np.ndarray, disp_w: int, disp_h: int) -> None:
                 countdown_label, countdown_remaining = recording_state.get_countdown()
                 stabilization_count = viz_stabilizer.active_count
+
+                # Loud, centered alert for the teleoperator when a camera has
+                # died and we're about to exit + save.
+                if camera_failure.is_set():
+                    dead = next((c for c in cameras if c.is_unrecoverable()), None)
+                    banner = "CAM STUCK"
+                    sub = "saving & exiting"
+                    if dead is not None:
+                        sub = f"{dead.name or dead.display_label} stuck - saving & exiting"
+                    scale = disp_w / 320.0
+                    (tw, th), _ = cv2.getTextSize(
+                        banner, cv2.FONT_HERSHEY_SIMPLEX, scale, max(4, int(scale * 3))
+                    )
+                    bx = (disp_w - tw) // 2
+                    by = (disp_h + th) // 2
+                    cv2.putText(canvas, banner, (bx, by), cv2.FONT_HERSHEY_SIMPLEX,
+                                scale, (0, 0, 0), max(8, int(scale * 6)))
+                    cv2.putText(canvas, banner, (bx, by), cv2.FONT_HERSHEY_SIMPLEX,
+                                scale, (0, 0, 255), max(4, int(scale * 3)))
+                    (sw, _sh), _ = cv2.getTextSize(
+                        sub, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2
+                    )
+                    sx = (disp_w - sw) // 2
+                    sy = by + int(th * 0.9)
+                    cv2.putText(canvas, sub, (sx, sy), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.9, (0, 0, 0), 4)
+                    cv2.putText(canvas, sub, (sx, sy), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.9, (255, 255, 255), 1)
 
                 if recording_state.is_transition_pending:
                     label = f"WAITING  ep {recording_state.episode_idx}"
@@ -1814,6 +2002,16 @@ def main() -> None:
                             _submit_reset("keyboard")
                         elif key in (ord('m'), ord('M')):
                             _submit_cycle_mode("keyboard")
+
+                # A camera died: hold the big "CAM STUCK" banner on screen long
+                # enough for the teleoperator to read it before we exit + save.
+                if camera_failure.is_set():
+                    dwell_until = time.monotonic() + 3.0
+                    while time.monotonic() < dwell_until:
+                        frames = viz_stabilizer.process(
+                            [c.get_frame() for c in cameras]
+                        )
+                        preview.render(frames, _draw_record_overlay)
         elif dataset is not None and use_keyboard:
             run_cbreak_keyboard_loop(
                 stop_event,
