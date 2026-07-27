@@ -1,24 +1,0 @@
-2026-07-07 01:09:41,453 INFO HF mirror: /lerobot-ros/data/pick_vial_20260524 -> RamaE/lerobot-data-pick_vial_20260524
-2026-07-07 01:09:41,743 INFO HTTP Request: POST https://huggingface.co/api/repos/create "HTTP/1.1 409 Conflict"
-/lerobot-ros/src/lerobot_ros2/hub_sync.py:282: FutureWarning: 
-================================================================================
-`upload_large_folder` is DEPRECATED and will be removed in a future release.
-
-Use `upload_folder` instead:
-
-    api.upload_folder(repo_id="RamaE/lerobot-data-pick_vial_20260524", repo_type="dataset", folder_path="/lerobot-ros/data/pick_vial_20260524")
-================================================================================
-
-  api.upload_large_folder(
-2026-07-07 01:09:41,778 INFO HTTP Request: POST https://huggingface.co/api/repos/create "HTTP/1.1 409 Conflict"
-2026-07-07 01:09:41,934 INFO HTTP Request: GET https://huggingface.co/api/datasets/RamaE/lerobot-data-pick_vial_20260524/commits/main "HTTP/1.1 200 OK"
-Recovering from metadata files:   0%|          | 0/109 [00:00<?, ?it/s]Recovering from metadata files: 100%|██████████| 109/109 [00:00<00:00, 6237.44it/s]
-2026-07-07 01:09:42,970 INFO HF mirror complete: RamaE/lerobot-data-pick_vial_20260524
-
-
-
----------- 2026-07-07 01:09:41 (0:00:00) ----------
-Files:   hashed 109/109 (7.8G/7.8G) | pre-uploaded: 85/85 (7.8G/7.8G) | committed: 109/109 (7.8G/7.8G) | ignored: 0
-Workers: hashing: 0 | get upload mode: 0 | pre-uploading: 0 | committing: 0 | waiting: 0
----------------------------------------------------
-Backup complete.
