@@ -11,23 +11,30 @@ readme = "README.md"
 # ``lerobot`` (huggingface/lerobot) is deliberately NOT declared here: it is
 # installed separately (editable, from a pinned commit) in the Docker image
 # and we don't want pip to pull a PyPI version over the top of it.
+#
+# ``torch``/``torchvision`` are base, not an extra: we import them directly in
+# 10 modules, and ``lerobot`` hard-requires torch>=2.7 anyway, so there is no
+# install in which they are genuinely absent.
+#
+# ``gradio``/``matplotlib`` (viz) and ``evdev`` (pedal) ARE genuinely optional --
+# only the visualizers and the foot pedal need them. See README "Install".
 dependencies = [
     "numpy",
     "opencv-python",
     "pyyaml",
-    "torch",
-    "torchvision",
     "pillow",
-    "matplotlib",
     "pandas",
     "av",
-    "gradio",
     "pyarrow",
     "huggingface_hub>=0.26",
+    "torch",
+    "torchvision",
 ]
 
 [project.optional-dependencies]
+viz = ["gradio", "matplotlib"]
 pedal = ["evdev"]
+all = ["lerobot-ros2[viz,pedal]"]
 
 [project.scripts]
 lerobot-ros-record = "lerobot_ros2.cli.record:main"

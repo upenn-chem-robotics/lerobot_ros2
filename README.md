@@ -29,28 +29,93 @@ lerobot-ros2/
 | Requirement | Why | Notes |
 |-------------|-----|-------|
 | Python >= 3.10 | | |
-| ROS 2 (`rclpy`, `sensor_msgs`, `std_srvs`, `rcl_interfaces`) | Arm/camera I/O in `helper.py`, `record`, `deploy`, `dagger` | Comes from the ROS 2 install (`source /opt/ros/<distro>/setup.bash`), **not** pip. Dataset-only tooling (plateau, action-source, downsample, backup, app) does not need it. |
+| ROS 2 Humble (`rclpy`, `sensor_msgs`, `std_srvs`, `rcl_interfaces`) | Arm/camera I/O in `helper.py`, `record`, `deploy`, `dagger` | Installed as **conda** packages from the `robostack-staging` channel (see [`environment.yml`](environment.yml)) — not apt, not pip. Activating the conda env is what puts `rclpy` on the path. Dataset-only tooling (plateau, action-source, downsample, backup, app) does not need it. |
 | `v4l-utils` (`v4l2-ctl`) | Camera control apply/verify, `lerobot-ros-probe-cameras` | System package (`apt install v4l-utils`) |
 | Rust toolchain (`cargo`/`rustup`) or Nix | Only to build the OBSBOT Meet SE control CLI via `scripts/setup_obsbot_cli.sh` | Optional; see the OBSBOT section below |
 | `huggingface/lerobot` | Core datasets/policies/training; imported by 17 modules | Installed separately and **deliberately not declared** as a dependency so pip never pulls a PyPI version over your editable checkout |
 
-### Install steps
+### Reproducible install (recommended)
+
+The [`Dockerfile`](Dockerfile) builds the exact validated stack — conda env, ROS
+2, CUDA torch wheels, `lerobot` at its pinned commit, this repo and both policy
+plugins:
+
+```bash
+docker build -t lerobot-ros2 .
+docker run --gpus all -it --rm -v /path/to/data:/lerobot-ros/data lerobot-ros2
+```
+
+Datasets are mounted at runtime, not baked in (`data/` is in
+[`.dockerignore`](.dockerignore)).
+
+Two lockfiles sit behind it:
+
+| File | Covers | Notes |
+|------|--------|-------|
+| [`environment.yml`](environment.yml) | 537 conda + 81 pip packages | **Source of truth.** Includes ROS 2 Humble from `robostack-staging`. linux-64 specific (exact build strings). |
+| [`constraints.txt`](constraints.txt) | the 81 pip packages only | For pip-only users; holds versions steady on a manual install. |
+
+`environment.yml` is the authoritative one because ROS 2 here is **conda**
+packages from the `robostack-staging` channel, not apt and not PyPI — a pip
+requirements file structurally cannot describe this environment. Both files
+deliberately exclude `lerobot` and this repo's three distributions, which the
+Dockerfile layers on top from source.
+
+To reproduce the env without Docker:
+
+```bash
+conda env create -f environment.yml
+conda activate lerobot
+pip install --no-deps "lerobot @ git+https://github.com/huggingface/lerobot.git@d60a700d2b32590ed113d694fd87617e43506081"
+pip install --no-deps -e . -e packages/lerobot_policy_strided_diffusion -e packages/lerobot_policy_action_history_diffusion
+```
+
+`--no-deps` is deliberate: `environment.yml` already pins the full tree, and
+letting pip re-resolve fights the conda-provided packages.
+
+### Manual install
 
 ```bash
 # 1. lerobot first, pinned to the commit this repo is validated against:
 pip install -e "git+https://github.com/huggingface/lerobot.git@d60a700d2b32590ed113d694fd87617e43506081#egg=lerobot"
 
-# 2. This repo + both policy plugins:
-pip install -e .
+# 2. This repo, picking the feature set you need (see matrix below):
+pip install -e ".[all]" -c constraints.txt
+
+# 3. Policy plugins (each is a standalone distribution, install only what you use):
 pip install -e packages/lerobot_policy_strided_diffusion
 pip install -e packages/lerobot_policy_action_history_diffusion
 ```
 
+### What to install for which feature
+
+| I want to... | Install | Adds |
+|--------------|---------|------|
+| Dataset prep, training and deploy — most CLIs | `pip install -e .` | base only |
+| Visualize — `app`, `export`, `plateau-visualize` | `pip install -e ".[viz]"` | `gradio`, `matplotlib` |
+| Use the USB foot pedal in `record`/`dagger` | `pip install -e ".[pedal]"` | `evdev` |
+| Everything | `pip install -e ".[all]"` | both extras |
+| Strided-observation policy | `pip install -e packages/lerobot_policy_strided_diffusion` | separate distribution |
+| Action-history policy | `pip install -e packages/lerobot_policy_action_history_diffusion` | separate distribution |
+
+Only two things are genuinely optional. `gradio` is a heavy tree (fastapi,
+uvicorn, starlette) needed solely by the visualizers, and `evdev` only by the
+foot pedal.
+
+`torch` is **not** an extra, for two reasons: 10 modules import it directly, and
+`lerobot` itself requires `torch>=2.7`, so no realistic install lacks it.
+Notably `add-action-source*` and `trim-tail` pull torch at import even though
+they are dataset-prep tools.
+
+`record`, `deploy` and `dagger` additionally need ROS 2, which pip cannot
+install (see Prerequisites above).
+
 ### Python dependency reference
 
-Declared in `pyproject.toml` and pulled in automatically. Versions are the
-known-good set from the validated `lerobot` conda env — pin these when building
-a fresh image.
+Versions are the known-good set from the validated `lerobot` conda env, and are
+what [`constraints.txt`](constraints.txt) pins.
+
+Base (always installed):
 
 | Package | Version | Used by |
 |---------|---------|---------|
@@ -61,20 +126,20 @@ a fresh image.
 | `pandas` | 3.0.2 | dataset frames / stats |
 | `av` | 17.0.0 | video encode/decode |
 | `pillow` (`PIL`) | 11.3.0 | image I/O |
-| `matplotlib` | 3.10.8 | timeline plots, `app`, `video_exporter` |
-| `gradio` | 6.12.0 | `lerobot-ros-app` visualizer |
-| `torch` | 2.10.0 | deploy, dagger, preprocessing, `training/`, action-history plugin |
-| `torchvision` | 0.25.0 | image transforms / augmentation preview |
 | `huggingface_hub` | 1.15.0 | HF backup + mirror (`hf` CLI comes from here) |
+| `torch` | 2.10.0 | deploy, dagger, preprocessing, `training/`, action-source CLIs, action-history plugin |
+| `torchvision` | 0.25.0 | image transforms / augmentation preview |
 
-Optional extra:
+Extras:
 
-```bash
-pip install -e ".[pedal]"    # evdev 1.9.3 — USB foot pedal support in record/dagger
-```
+| Package | Version | Extra | Used by |
+|---------|---------|-------|---------|
+| `gradio` | 6.12.0 | `viz` | `lerobot-ros-app` visualizer |
+| `matplotlib` | 3.10.8 | `viz` | timeline plots, `app`, `video_exporter` |
+| `evdev` | 1.9.3 | `pedal` | USB foot pedal in record/dagger |
 
 Installed transitively via `lerobot`, but version-critical for reproducing
-training runs — pin them too:
+training runs — `constraints.txt` pins these too:
 
 | Package | Version | Why it matters |
 |---------|---------|----------------|
