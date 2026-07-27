@@ -1257,21 +1257,146 @@ def parse_args() -> argparse.Namespace:
 
 # ── Dataset-safety helpers ─────────────────────────────────────────────────
 
-def _dataset_has_episode_data(root: Path) -> bool:
-    """Return True if ``root`` holds real recorded episodes on disk.
+# Files a brand-new dataset writes before a single episode is recorded. Every
+# other file under a dataset directory means real work lives there.
+_SKELETON_RELATIVE_PATHS = {
+    Path("meta/info.json"),
+    Path("meta/recording_stats.json"),
+    Path("recording_config.yaml"),
+    Path("experiment_config.yaml"),
+}
 
-    This looks for actual parquet/video files under ``data/`` and ``videos/``
-    rather than trusting ``meta/info.json``. A session that crashed before
-    ``finalize()`` leaves episodes on disk while ``info.json`` still reports
-    ``total_episodes: 0`` — those must never be treated as disposable.
+# Where a raw recording ends up once a dataset has been reorganized for
+# training: the episodes are moved into one of these subdirectories while
+# derived artifacts (train/, exports/, ...) sit alongside it. New episodes must
+# be appended to that nested raw dataset, not to a fresh one at the top level.
+_NESTED_RAW_DIR_NAMES = ("original_data", "raw", "recording", "recordings")
+
+# Subdirectories that never hold a raw recording, so they are skipped when
+# searching for the dataset to append to.
+_NON_RAW_DIR_NAMES = frozenset({
+    "data", "videos", "images", "meta",
+    "train", "exports", "eval", "logs", "outputs", "checkpoints",
+})
+
+
+def _dataset_has_episode_data(root: Path) -> bool:
+    """Return True if ``root`` holds anything beyond an empty dataset skeleton.
+
+    Deliberately does not trust ``meta/info.json``: a session that crashed
+    before ``finalize()`` leaves episodes on disk while ``info.json`` still
+    reports ``total_episodes: 0``, and a dataset that was reorganized by hand
+    (episodes moved under ``original_data/``, training variants under
+    ``train/``) has no top-level ``data/`` or ``videos/`` at all. Both must be
+    treated as irreplaceable.
     """
-    for sub in ("data", "videos"):
-        base = root / sub
-        if base.exists():
-            for path in base.rglob("*"):
-                if path.is_file():
-                    return True
+    for path in root.rglob("*"):
+        if path.is_file() and path.relative_to(root) not in _SKELETON_RELATIVE_PATHS:
+            return True
     return False
+
+
+def _dataset_episode_count(root: Path) -> int:
+    """Episodes already recorded in the LeRobot dataset at ``root``.
+
+    Returns 0 when ``root`` is not a LeRobot dataset or its metadata is
+    unreadable.
+    """
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return 0
+    try:
+        info = json.loads(info_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0
+    try:
+        return int(info.get("total_episodes", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _find_resumable_dataset(root: Path) -> Optional[Path]:
+    """Locate the dataset under ``root`` that new episodes should append to.
+
+    Normally that is ``root`` itself. If ``root`` has been reorganized for
+    training the raw episodes live one level down (``root/original_data`` by
+    convention), so search there too instead of starting a new empty dataset
+    beside them.
+
+    Returns the directory to resume, or ``None`` when nothing resumable exists.
+    """
+    if _dataset_episode_count(root) > 0:
+        return root
+    if not root.is_dir():
+        return None
+
+    candidates = [root / name for name in _NESTED_RAW_DIR_NAMES]
+    candidates += sorted(
+        child for child in root.iterdir()
+        if child.is_dir()
+        and child.name not in _NON_RAW_DIR_NAMES
+        and ".bak-" not in child.name
+    )
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        if _dataset_episode_count(candidate) > 0:
+            return candidate
+    return None
+
+
+def _find_experiment_config(dataset_root: Path, requested_root: Path) -> Path:
+    """Path of the experiment config (home positions) governing ``dataset_root``.
+
+    Prefers the copy stored with the episodes. When a dataset has been
+    reorganized the episodes move into a subdirectory while the config stays
+    behind, so also look at the ancestors up to ``requested_root``: appending
+    episodes recorded against freshly derived home positions would silently make
+    the dataset inconsistent.
+
+    Falls back to the path inside ``dataset_root`` so a first-time run creates it
+    next to the episodes.
+    """
+    candidates = [dataset_root]
+    current = dataset_root
+    while current != requested_root and current.parent != current:
+        current = current.parent
+        candidates.append(current)
+        if current == requested_root:
+            break
+
+    for directory in candidates:
+        candidate = directory / "experiment_config.yaml"
+        if candidate.exists():
+            return candidate
+    return dataset_root / "experiment_config.yaml"
+
+
+def _resolve_dataset_root(root: Path) -> Tuple[Path, bool]:
+    """Return the dataset directory to record into and whether it is resumed.
+
+    Appending to existing episodes is the default: recording the same ``--name``
+    twice adds to the dataset rather than replacing it. Only when no resumable
+    dataset exists is a fresh one created, and then any leftover directory is
+    handed to :func:`_resolve_existing_dataset_dir`, which never destroys data
+    without an explicit confirmation.
+    """
+    resumable = _find_resumable_dataset(root)
+    if resumable is not None:
+        if resumable != root:
+            logging.info(
+                "Found %d existing episode(s) in %s; appending new episodes "
+                "there (%s holds the reorganized copy).",
+                _dataset_episode_count(resumable), resumable, root,
+            )
+        return resumable, True
+
+    if root.exists():
+        _resolve_existing_dataset_dir(root)
+    return root, False
 
 
 def _describe_dataset_dir(root: Path) -> str:
@@ -1331,12 +1456,13 @@ def _resolve_existing_dataset_dir(root: Path) -> None:
         )
         return
 
-    # ── There IS real recorded data here that we cannot resume. ──
+    # ── There IS real data here but no dataset we can append to. ──
     logging.error(
-        "Dataset directory %s already contains recorded episodes (%s) but its "
-        "meta/info.json does not mark it as resumable (likely a session that "
-        "crashed before finalizing).",
-        root, summary,
+        "Dataset directory %s is not empty (%s) but holds no dataset with "
+        "recorded episodes to append to — no meta/info.json reporting "
+        "total_episodes > 0, here or in a nested %s directory. Likely a session "
+        "that crashed before saving its first episode.",
+        root, summary, "/".join(_NESTED_RAW_DIR_NAMES),
     )
 
     if not interactive:
@@ -1472,24 +1598,12 @@ def main() -> None:
 
     arm_labels = arm_keys  # used for feature naming
 
-    root = Path("data") / args.name
     repo_id = f"ur_robotiq/{args.name}"
     n_threads = max(4 * len(cameras), 4)
-    stats_path = root / "meta" / "recording_stats.json"
 
-    _info_path = root / "meta" / "info.json"
-    _can_resume = False
-    if _info_path.exists():
-        try:
-            _info = json.loads(_info_path.read_text())
-            _can_resume = _info.get("total_episodes", 0) > 0
-        except (json.JSONDecodeError, KeyError):
-            pass
-    # NEVER silently wipe an existing dataset. If it can't be resumed, hand off
-    # to _resolve_existing_dataset_dir, which preserves recorded episodes by
-    # default and only deletes after an explicit, typed confirmation.
-    if not _can_resume and root.exists():
-        _resolve_existing_dataset_dir(root)
+    requested_root = Path("data") / args.name
+    root, _can_resume = _resolve_dataset_root(requested_root)
+    stats_path = root / "meta" / "recording_stats.json"
 
     recording_stats = RecordingStats.load(stats_path) if _can_resume else RecordingStats()
 
@@ -1653,7 +1767,7 @@ def main() -> None:
     if stop_event.is_set():
         logging.warning("Shutdown before initialization")
     else:
-        experiment_path = root / "experiment_config.yaml"
+        experiment_path = _find_experiment_config(root, requested_root)
         experiment_config = load_experiment_home_config(experiment_path)
         should_save_experiment_config = experiment_config is None
 

@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import logging
 import math
 import os
@@ -113,7 +112,8 @@ from lerobot_ros2.cli.record import (
     ResetRequestClient,
     ResetServiceClient,
     UserCommandExecutor,
-    _resolve_existing_dataset_dir,
+    _find_experiment_config,
+    _resolve_dataset_root,
     resolve_control_mode_services,
     resolve_reset_services,
     resolve_transition_ready_services,
@@ -824,23 +824,12 @@ def main() -> None:
     main_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
 
     # ── Dataset path / resume ───────────────────────────────────────────
-    root = Path("data") / f"{args.name}_dagger"
     repo_id = f"ur_robotiq/{args.name}_dagger"
     n_threads = max(4 * len(cameras), 4)
-    stats_path = root / "meta" / "recording_stats.json"
 
-    _info_path = root / "meta" / "info.json"
-    _can_resume = False
-    if _info_path.exists():
-        try:
-            _info = json.loads(_info_path.read_text())
-            _can_resume = _info.get("total_episodes", 0) > 0
-        except (json.JSONDecodeError, KeyError):
-            pass
-    # NEVER silently wipe an existing dataset. If it can't be resumed, preserve
-    # recorded episodes by default and only delete after explicit confirmation.
-    if not _can_resume and root.exists():
-        _resolve_existing_dataset_dir(root)
+    requested_root = Path("data") / f"{args.name}_dagger"
+    root, _can_resume = _resolve_dataset_root(requested_root)
+    stats_path = root / "meta" / "recording_stats.json"
 
     recording_stats = RecordingStats.load(stats_path) if _can_resume else RecordingStats()
 
@@ -951,7 +940,7 @@ def main() -> None:
         rclpy.try_shutdown()
         return
 
-    experiment_path = root / "experiment_config.yaml"
+    experiment_path = _find_experiment_config(root, requested_root)
     disk_experiment_config = load_experiment_home_config(experiment_path)
     should_save_experiment_config = disk_experiment_config is None
     effective_experiment_config = disk_experiment_config or experiment_config
