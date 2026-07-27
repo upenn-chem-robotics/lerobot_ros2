@@ -24,12 +24,64 @@ lerobot-ros2/
 
 ## Install
 
+### Prerequisites (not installed by pip)
+
+| Requirement | Why | Notes |
+|-------------|-----|-------|
+| Python >= 3.10 | | |
+| ROS 2 (`rclpy`, `sensor_msgs`, `std_srvs`, `rcl_interfaces`) | Arm/camera I/O in `helper.py`, `record`, `deploy`, `dagger` | Comes from the ROS 2 install (`source /opt/ros/<distro>/setup.bash`), **not** pip. Dataset-only tooling (plateau, action-source, downsample, backup, app) does not need it. |
+| `v4l-utils` (`v4l2-ctl`) | Camera control apply/verify, `lerobot-ros-probe-cameras` | System package (`apt install v4l-utils`) |
+| Rust toolchain (`cargo`/`rustup`) or Nix | Only to build the OBSBOT Meet SE control CLI via `scripts/setup_obsbot_cli.sh` | Optional; see the OBSBOT section below |
+| `huggingface/lerobot` | Core datasets/policies/training; imported by 17 modules | Installed separately and **deliberately not declared** as a dependency so pip never pulls a PyPI version over your editable checkout |
+
+### Install steps
+
 ```bash
-# One-shot dev setup (after `pip install -e huggingface/lerobot`)
+# 1. lerobot first, pinned to the commit this repo is validated against:
+pip install -e "git+https://github.com/huggingface/lerobot.git@d60a700d2b32590ed113d694fd87617e43506081#egg=lerobot"
+
+# 2. This repo + both policy plugins:
 pip install -e .
 pip install -e packages/lerobot_policy_strided_diffusion
 pip install -e packages/lerobot_policy_action_history_diffusion
 ```
+
+### Python dependency reference
+
+Declared in `pyproject.toml` and pulled in automatically. Versions are the
+known-good set from the validated `lerobot` conda env — pin these when building
+a fresh image.
+
+| Package | Version | Used by |
+|---------|---------|---------|
+| `numpy` | 2.4.3 | everywhere (20 modules) |
+| `opencv-python` (`cv2`) | 4.13.0.92 | camera capture, preview, video export (11 modules) |
+| `pyyaml` | 6.0.3 | config loading (9 modules) |
+| `pyarrow` | 23.0.1 | parquet dataset read/write (6 modules) |
+| `pandas` | 3.0.2 | dataset frames / stats |
+| `av` | 17.0.0 | video encode/decode |
+| `pillow` (`PIL`) | 11.3.0 | image I/O |
+| `matplotlib` | 3.10.8 | timeline plots, `app`, `video_exporter` |
+| `gradio` | 6.12.0 | `lerobot-ros-app` visualizer |
+| `torch` | 2.10.0 | deploy, dagger, preprocessing, `training/`, action-history plugin |
+| `torchvision` | 0.25.0 | image transforms / augmentation preview |
+| `huggingface_hub` | 1.15.0 | HF backup + mirror (`hf` CLI comes from here) |
+
+Optional extra:
+
+```bash
+pip install -e ".[pedal]"    # evdev 1.9.3 — USB foot pedal support in record/dagger
+```
+
+Installed transitively via `lerobot`, but version-critical for reproducing
+training runs — pin them too:
+
+| Package | Version | Why it matters |
+|---------|---------|----------------|
+| `lerobot` | 0.5.1 (commit `d60a700d`) | policy/dataset/training APIs |
+| `diffusers` | 0.35.2 | diffusion policy scheduler/UNet |
+| `torchcodec` | 0.10.0 | video decoding in the dataset loader |
+| `datasets` | 4.8.4 | HF dataset backend |
 
 Policy plugins live in their own distributions because
 `lerobot.utils.import_utils.register_third_party_plugins` discovers plugins
@@ -46,7 +98,8 @@ by enumerating installed distributions whose name starts with
 
 ## Config
 
-All CLIs require a teleop/camera config. Point them at one via either:
+The hardware CLIs (`record`, `deploy`, `dagger`, `probe-cameras`) require a
+teleop/camera config; the dataset-only CLIs do not. Point them at one via either:
 
 ```bash
 export GELLO_CONFIG=/path/to/gello.yaml
@@ -89,14 +142,40 @@ watch -n0.5 'v4l2-ctl -d /dev/video2 --get-ctrl=zoom_continuous,zoom_absolute'
 
 ## Console entry points
 
+Record / deploy (needs ROS 2 + hardware):
+
 | Command                | Description                                 |
 |------------------------|---------------------------------------------|
 | `lerobot-ros-record`   | Record teleoperation datasets               |
 | `lerobot-ros-deploy`   | Deploy a trained ACT / Diffusion policy     |
-| `lerobot-ros-export`   | Export dataset grid videos / timelines      |
+| `lerobot-ros-dagger`   | DAgger-style human-correction recorder      |
 | `lerobot-ros-probe-cameras` | Snapshot v4l2 controls per camera     |
+
+Dataset prep (no ROS 2 needed):
+
+| Command                | Description                                 |
+|------------------------|---------------------------------------------|
 | `lerobot-ros-downsample` | Rewrite + downsample a LeRobot v3 dataset |
+| `lerobot-ros-add-action-source` | Add `action_source = 1` to a base teleop dataset so it is schema-compatible with DAgger datasets |
+| `lerobot-ros-add-action-source-with-plateau` | Plateau-aware sibling: tags no-motion frames `0` so they are not sampled as anchors |
+| `lerobot-ros-trim-tail` | Drop the trailing fraction of frames per episode (stationary "completion" tails) |
+
+Inspect / debug:
+
+| Command                | Description                                 |
+|------------------------|---------------------------------------------|
 | `lerobot-ros-app`      | Gradio dataset visualizer                   |
+| `lerobot-ros-export`   | Export dataset grid videos / timelines      |
+| `lerobot-ros-plateau-stats` | Read-only plateau (no-op) frame statistics per dataset / episode |
+| `lerobot-ros-plateau-visualize` | Render an MP4 overlaying plateau detection on episode video |
+| `lerobot-ros-preview-aug` | Tiled PNG of the exact image-transform pipeline training sees |
+| `lerobot-ros-preview-episode` | Render one episode through the exact training-time image pipeline |
+| `lerobot-ros-cut`      | Interactive ROI picker; prints a crop spec for `per_camera_crops` |
+
+Train:
+
+| Command                | Description                                 |
+|------------------------|---------------------------------------------|
 | `lerobot-ros-train`    | `lerobot-train` + auto-mirror checkpoints to HF |
 | `lerobot-ros-train-dagger` | DAgger-aware training + auto-mirror to HF |
 | `lerobot-ros-backup`   | Mirror / verify `data/` folders on Hugging Face |

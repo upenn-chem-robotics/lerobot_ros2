@@ -11,11 +11,11 @@ this video, ``q`` = quit.
 
 Examples::
 
-    python -m lerobot_ros2.cli.cut path/to/file-000.mp4
-    python -m lerobot_ros2.cli.cut data/.../videos/*/chunk-000/file-000.mp4
-    python -m lerobot_ros2.cli.cut data/.../videos --frame 30      # start on frame 30
-    python -m lerobot_ros2.cli.cut data/.../videos --second 2.5    # start at t=2.5s
-    python -m lerobot_ros2.cli.cut data/.../videos --frame 30 --no-scrub  # skip scrubber
+    lerobot-ros-cut path/to/file-000.mp4
+    lerobot-ros-cut data/.../videos/*/chunk-000/file-000.mp4
+    lerobot-ros-cut data/.../videos --frame 30      # start on frame 30
+    lerobot-ros-cut data/.../videos --second 2.5    # start at t=2.5s
+    lerobot-ros-cut data/.../videos --frame 30 --no-scrub  # skip scrubber
 """
 
 import argparse

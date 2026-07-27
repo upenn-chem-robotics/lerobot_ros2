@@ -22,7 +22,6 @@ dependencies = [
     "pandas",
     "av",
     "gradio",
-    "pytz",
     "pyarrow",
     "huggingface_hub>=0.26",
 ]
@@ -40,7 +39,6 @@ lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
 lerobot-ros-app = "lerobot_ros2.cli.app:main"
 lerobot-ros-train-dagger = "lerobot_ros2.cli.train_dagger:main"
 lerobot-ros-train = "lerobot_ros2.cli.train:main"
-lerobot-ros-train-sequential = "lerobot_ros2.cli.train_sequential:main"
 lerobot-ros-backup = "lerobot_ros2.cli.backup:main"
 lerobot-ros-preview-aug = "lerobot_ros2.cli.preview_aug:main"
 lerobot-ros-preview-episode = "lerobot_ros2.cli.preview_episode:main"
@@ -49,6 +47,7 @@ lerobot-ros-add-action-source-with-plateau = "lerobot_ros2.cli.add_action_source
 lerobot-ros-plateau-stats = "lerobot_ros2.cli.plateau_stats:main"
 lerobot-ros-plateau-visualize = "lerobot_ros2.cli.plateau_visualize:main"
 lerobot-ros-trim-tail = "lerobot_ros2.cli.trim_tail:main"
+lerobot-ros-cut = "lerobot_ros2.cli.cut:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
