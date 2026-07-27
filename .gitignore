@@ -9,6 +9,7 @@ dist/
 .eggs/
 .venv/
 .env
+.pytest_cache/
 
 # IDE / editors
 .vscode/
@@ -17,6 +18,11 @@ dist/
 
 # Models / outputs
 outputs/
+
+# Run logs, scratch dirs and HF cache (local only, never committed)
+logs/
+tmp_plateau_test/
+.tmp_hf_cache/
 
 # Vendored OBSBOT Meet SE CLI (bundles OBSBOT's proprietary SDK — do not commit)
 third_party/

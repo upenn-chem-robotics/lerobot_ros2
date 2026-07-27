@@ -11,24 +11,30 @@ readme = "README.md"
 # ``lerobot`` (huggingface/lerobot) is deliberately NOT declared here: it is
 # installed separately (editable, from a pinned commit) in the Docker image
 # and we don't want pip to pull a PyPI version over the top of it.
+#
+# ``torch``/``torchvision`` are base, not an extra: we import them directly in
+# 10 modules, and ``lerobot`` hard-requires torch>=2.7 anyway, so there is no
+# install in which they are genuinely absent.
+#
+# ``gradio``/``matplotlib`` (viz) and ``evdev`` (pedal) ARE genuinely optional --
+# only the visualizers and the foot pedal need them. See README "Install".
 dependencies = [
     "numpy",
     "opencv-python",
     "pyyaml",
-    "torch",
-    "torchvision",
     "pillow",
-    "matplotlib",
     "pandas",
     "av",
-    "gradio",
-    "pytz",
     "pyarrow",
     "huggingface_hub>=0.26",
+    "torch",
+    "torchvision",
 ]
 
 [project.optional-dependencies]
+viz = ["gradio", "matplotlib"]
 pedal = ["evdev"]
+all = ["lerobot-ros2[viz,pedal]"]
 
 [project.scripts]
 lerobot-ros-record = "lerobot_ros2.cli.record:main"
@@ -40,7 +46,6 @@ lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
 lerobot-ros-app = "lerobot_ros2.cli.app:main"
 lerobot-ros-train-dagger = "lerobot_ros2.cli.train_dagger:main"
 lerobot-ros-train = "lerobot_ros2.cli.train:main"
-lerobot-ros-train-sequential = "lerobot_ros2.cli.train_sequential:main"
 lerobot-ros-backup = "lerobot_ros2.cli.backup:main"
 lerobot-ros-preview-aug = "lerobot_ros2.cli.preview_aug:main"
 lerobot-ros-preview-episode = "lerobot_ros2.cli.preview_episode:main"
@@ -49,6 +54,7 @@ lerobot-ros-add-action-source-with-plateau = "lerobot_ros2.cli.add_action_source
 lerobot-ros-plateau-stats = "lerobot_ros2.cli.plateau_stats:main"
 lerobot-ros-plateau-visualize = "lerobot_ros2.cli.plateau_visualize:main"
 lerobot-ros-trim-tail = "lerobot_ros2.cli.trim_tail:main"
+lerobot-ros-cut = "lerobot_ros2.cli.cut:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

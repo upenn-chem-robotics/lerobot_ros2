@@ -14,8 +14,9 @@ required.
 
 ## Install
 
-Already baked into the image (see the top-level `Dockerfile`). For an ad-hoc
-install outside the container:
+Requires `lerobot` to already be installed in the same environment (see the
+top-level [README](../../README.md) for the pinned commit). Then, from the
+repository root:
 
 ```bash
 pip install -e packages/lerobot_policy_strided_diffusion
