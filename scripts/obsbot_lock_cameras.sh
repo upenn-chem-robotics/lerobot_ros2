@@ -21,6 +21,10 @@
 # Run this at the START of every recording / deploy session, AFTER the cameras
 # are plugged in and BEFORE `lerobot-ros-record` / `lerobot-ros-deploy`.
 #
+# This script and config/gello.yaml are complements, not alternatives: gello.yaml
+# owns every standard V4L2 control, this owns the SDK-only ones. See the
+# "gello.yaml vs obsbot-cli" section of README.md for the full split.
+#
 # Usage:
 #   scripts/obsbot_lock_cameras.sh
 #   scripts/obsbot_lock_cameras.sh --focus 35
@@ -32,7 +36,7 @@ ZOOM="1.0"
 FOCUS=""          # empty => don't touch focus (leave it to v4l2/gello.yaml)
 CLI="${OBSBOT_CLI:-}"
 
-usage() { sed -n '2,40p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,32p' "$0"; exit "${1:-0}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
