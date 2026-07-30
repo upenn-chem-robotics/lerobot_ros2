@@ -28,6 +28,31 @@ services:
 # key) to rotate every arm together — the legacy behaviour.
 rotation_arm: left
 
+# Which arm follows Gello during each subtask of a long-horizon episode, in
+# order (index 0 is the first subtask). Only consulted when record.py runs with
+# `--pedal-right-action subtask`: the RIGHT foot pedal then advances the
+# per-frame `subtask_index` label instead of cycling ROTATE_CW/ROTATE_CCW, and
+# every arm that is not listed for the current subtask is held at control_mode
+# IDLE. An IDLE follower keeps its last commanded pose, so the operator can let
+# go of that Gello leader entirely, and the recorded action column for that arm
+# is a constant for the duration.
+#
+# `arm` is matched against the recorded arm keys (`arms:` above). `name` is
+# optional and purely for the operator: it is shown on the preview overlay as
+# "step 3/6 solid (right)", which can be checked against the bench at a glance
+# in a way a bare "step 3/6" cannot. Entries may also be bare arm names
+# (`- left`) if you don't want names.
+#
+# The list length is the default for `--subtask-count`. Remove the key (or pass
+# an empty list) to keep every arm following Gello for the whole episode.
+subtask_arms:
+  - {arm: left,  name: stir bar}
+  - {arm: left,  name: funnel on}
+  - {arm: right, name: solid}
+  - {arm: right, name: liquid}
+  - {arm: right, name: funnel off}
+  - {arm: right, name: septum}
+
 use_reset_client: false
 
 # Joints whose raw /joint_states readings may drift by multiples of 2π across

@@ -224,6 +224,7 @@ Dataset prep (no ROS 2 needed):
 | `lerobot-ros-add-action-source` | Add `action_source = 1` to a base teleop dataset so it is schema-compatible with DAgger datasets |
 | `lerobot-ros-add-action-source-with-plateau` | Plateau-aware sibling: tags no-motion frames `0` so they are not sampled as anchors |
 | `lerobot-ros-trim-tail` | Drop the trailing fraction of frames per episode (stationary "completion" tails) |
+| `lerobot-ros-fix-subtasks` | Audit `subtask_index` labels per episode and repair a mislabelled one from subtask boundary times, instead of re-recording it |
 
 Inspect / debug:
 

@@ -50,8 +50,9 @@ import signal
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, NamedTuple, Optional, Tuple
 
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
@@ -126,20 +127,31 @@ def load_camera_grid_columns(cfg: dict) -> int:
     return int(visualization_cfg.get("camera_grid_columns", 1))
 
 
+# Minimum gap between two accepted subtask steps. Sits on top of
+# FootPedalThread's own per-action debounce.
+_SUBTASK_DEBOUNCE_S = 0.5
+
+
 class RecordingState:
     """Controls episode recording lifecycle, safe to call from multiple threads."""
 
-    def __init__(self) -> None:
+    def __init__(self, subtask_count: int = 0) -> None:
         self._lock = threading.Lock()
         self.is_recording = False
         self.episode_idx = 0
         self._save_requested = False
         self._last_toggle_time = 0.0
+        # 0 disables subtask labelling entirely: no counter, no dataset column.
+        self._subtask_count = max(int(subtask_count), 0)
+        self._subtask_index = 0
+        self._last_subtask_time = 0.0
         self._is_resetting = False
         self._capture_paused = False
         self._transition_pending = False
         self._transient_label: Optional[str] = None
         self._transient_until = 0.0
+        self._subtask_flash_label: Optional[str] = None
+        self._subtask_flash_until = 0.0
         self._countdown_label: Optional[str] = None
         self._countdown_until = 0.0
 
@@ -169,7 +181,13 @@ class RecordingState:
             return False
         self._last_toggle_time = now
         self.is_recording = True
+        # Every episode begins in subtask 1, so the operator's first pedal press
+        # is the 1 -> 2 boundary rather than the entry into subtask 1.
+        self._subtask_index = 0
+        self._last_subtask_time = 0.0
         logging.info(f"[{label}] ● Recording STARTED — episode {self.episode_idx}")
+        if self._subtask_count > 0:
+            logging.info(f"[{label}] Subtask 1/{self._subtask_count}")
         return True
 
     def _stop_locked(self, label: str = "", save_episode: bool = True) -> None:
@@ -189,6 +207,52 @@ class RecordingState:
                 self.episode_idx += 1
                 return True
             return False
+
+    @property
+    def subtask_count(self) -> int:
+        with self._lock:
+            return self._subtask_count
+
+    @property
+    def subtask_index(self) -> int:
+        with self._lock:
+            return self._subtask_index
+
+    def subtask_snapshot(self) -> Tuple[int, int]:
+        """``(index, count)`` read under one lock; count 0 means labelling is off."""
+        with self._lock:
+            return self._subtask_index, self._subtask_count
+
+    def advance_subtask(self, label: str = "") -> Optional[int]:
+        """Move to the next subtask; returns the new index, or None if unchanged."""
+        return self._step_subtask(1, label=label)
+
+    def retreat_subtask(self, label: str = "") -> Optional[int]:
+        """Move back a subtask (to undo a stray press); None if unchanged."""
+        return self._step_subtask(-1, label=label)
+
+    def _step_subtask(self, delta: int, label: str = "") -> Optional[int]:
+        with self._lock:
+            if self._subtask_count <= 0:
+                return None
+            now = time.monotonic()
+            # FootPedalThread already debounces per action, but composite pedals
+            # echo the same press across several evdev nodes and a double-count
+            # here mislabels a whole subtask's worth of frames.
+            if now - self._last_subtask_time < _SUBTASK_DEBOUNCE_S:
+                logging.info(f"[{label}] Subtask step ignored (debounced)")
+                return None
+            self._last_subtask_time = now
+            target = self._subtask_index + delta
+            if not 0 <= target < self._subtask_count:
+                edge = "first" if delta < 0 else "last"
+                logging.warning(
+                    f"[{label}] Subtask step ignored — already on the {edge} subtask "
+                    f"({self._subtask_index + 1}/{self._subtask_count})"
+                )
+                return None
+            self._subtask_index = target
+            return target
 
     @property
     def is_resetting(self) -> bool:
@@ -236,6 +300,27 @@ class RecordingState:
         with self._lock:
             self._transient_label = None
             self._transient_until = 0.0
+
+    def set_subtask_flash(self, label: str, duration_s: float = 1.5) -> None:
+        """Announce a subtask change in the preview, big and centered.
+
+        Deliberately separate from the transient label: that one is drawn by a
+        branch that sits *below* the ``is_recording`` branch, so it is
+        unreachable mid-episode — exactly when a subtask change happens.
+        """
+        with self._lock:
+            self._subtask_flash_label = label
+            self._subtask_flash_until = time.monotonic() + max(duration_s, 0.0)
+
+    def get_subtask_flash(self) -> Optional[str]:
+        with self._lock:
+            if self._subtask_flash_label is None:
+                return None
+            if time.monotonic() > self._subtask_flash_until:
+                self._subtask_flash_label = None
+                self._subtask_flash_until = 0.0
+                return None
+            return self._subtask_flash_label
 
     def set_countdown(self, label: str, duration_s: float = 5.0) -> None:
         with self._lock:
@@ -412,17 +497,8 @@ class GelloControlModeClient:
             }
         return {name: mode for name in self._clients}
 
-    def set_mode(self, mode: int, label: str = "") -> None:
-        if mode not in self._VALID_MODES:
-            raise ValueError(f"Unsupported control mode: {mode}")
-
-        if not self._clients:
-            self._mode = mode
-            logging.warning("[%s] control_mode -> %s (no services configured)", label, self.mode_label(mode))
-            return
-
-        targets = self._target_modes(mode)
-
+    def _apply_targets(self, targets: Dict[str, int], label: str) -> bool:
+        """Write one ``control_mode`` value per service; True when all succeeded."""
         all_ok = True
         for name, client in self._clients.items():
             svc_mode = targets[name]
@@ -436,12 +512,6 @@ class GelloControlModeClient:
                     ),
                 )
             ]
-
-            if svc_mode != mode:
-                logging.info(
-                    "[%s] %s: freezing at %s while %s active",
-                    label, name, self.mode_label(svc_mode), self.mode_label(mode),
-                )
 
             if not client.service_is_ready():
                 logging.info("Waiting for service %s...", name)
@@ -463,8 +533,26 @@ class GelloControlModeClient:
                 logging.warning("[%s] %s: control_mode rejected: %s", label, name, reasons)
                 all_ok = False
 
-        if all_ok:
+        return all_ok
+
+    def set_mode(self, mode: int, label: str = "") -> None:
+        if mode not in self._VALID_MODES:
+            raise ValueError(f"Unsupported control mode: {mode}")
+
+        if not self._clients:
             self._mode = mode
+            logging.warning("[%s] control_mode -> %s (no services configured)", label, self.mode_label(mode))
+            return
+
+        targets = self._target_modes(mode)
+        for name, svc_mode in targets.items():
+            if svc_mode != mode:
+                logging.info(
+                    "[%s] %s: freezing at %s while %s active",
+                    label, name, self.mode_label(svc_mode), self.mode_label(mode),
+                )
+
+        if self._apply_targets(targets, label):
             logging.info("[%s] control_mode -> %s (%d)", label, self.mode_label(mode), mode)
         else:
             logging.warning(
@@ -473,7 +561,72 @@ class GelloControlModeClient:
                 self.mode_label(mode),
                 mode,
             )
-            self._mode = mode
+        self._mode = mode
+
+    def service_for_arm(self, arm_name: str) -> Optional[str]:
+        """control_mode service whose path contains ``arm_name``.
+
+        Same substring match :func:`resolve_rotation_services` uses, so ``left``
+        selects ``/left_gello_offset_node/set_parameters``.
+        """
+        token = str(arm_name).strip().lower()
+        if not token:
+            return None
+        for name in self._clients:
+            if token in name.lower():
+                return name
+        return None
+
+    def set_arm_modes(self, arm_modes: Dict[str, int], label: str = "") -> None:
+        """Request a different ``control_mode`` per arm in one pass.
+
+        ``arm_modes`` maps recorded arm keys ("left"/"right") to modes. Any
+        service not named in ``arm_modes`` is set to IDLE, so a caller can never
+        leave an unlisted arm following Gello by omission. Unresolvable arm
+        names are skipped with a warning rather than silently ignored.
+        """
+        for mode in arm_modes.values():
+            if mode not in self._VALID_MODES:
+                raise ValueError(f"Unsupported control mode: {mode}")
+
+        if not self._clients:
+            logging.warning(
+                "[%s] per-arm control_mode -> %s (no services configured)",
+                label,
+                {arm: self.mode_label(mode) for arm, mode in sorted(arm_modes.items())},
+            )
+            return
+
+        targets = {name: self.MODE_IDLE for name in self._clients}
+        for arm_name, mode in arm_modes.items():
+            service = self.service_for_arm(arm_name)
+            if service is None:
+                logging.warning(
+                    "[%s] no control_mode service matches arm %r (have %s); skipping it",
+                    label, arm_name, sorted(self._clients),
+                )
+                continue
+            targets[service] = mode
+
+        all_ok = self._apply_targets(targets, label)
+        summary = ", ".join(
+            f"{name}={self.mode_label(mode)}" for name, mode in sorted(targets.items())
+        )
+        if all_ok:
+            logging.info("[%s] per-arm control_mode -> %s", label, summary)
+        else:
+            logging.warning(
+                "[%s] Some per-arm control_mode updates failed; requested %s", label, summary
+            )
+
+        # There is no single logical mode any more, but the overlay and the
+        # cycle-mode handler both read ``mode``. NORMAL whenever some arm is
+        # following keeps both of them honest.
+        self._mode = (
+            self.MODE_NORMAL
+            if any(mode == self.MODE_NORMAL for mode in targets.values())
+            else self.MODE_IDLE
+        )
 
 
 def resolve_control_mode_services(services_cfg: dict) -> List[str]:
@@ -515,6 +668,132 @@ def resolve_rotation_services(
             rotation_arm, control_mode_services,
         )
     return matched
+
+
+class SubtaskSpec(NamedTuple):
+    """One subtask of a long-horizon episode: which arm drives it, and its name.
+
+    ``name`` is cosmetic but load-bearing for the operator: "step 3/6 solid" can
+    be checked against the bench at a glance, where a bare "step 3/6" cannot.
+    """
+
+    arm: str
+    name: str = ""
+
+
+def resolve_subtasks(cfg: dict) -> List[SubtaskSpec]:
+    """Parse the optional top-level ``subtask_arms`` list into specs, in order.
+
+    Each entry is either a bare arm name::
+
+        subtask_arms: [left, left, right]
+
+    or a mapping that also names the subtask::
+
+        subtask_arms:
+          - {arm: left,  name: stir bar}
+          - {arm: right, name: solid}
+
+    An empty result means "every arm follows Gello at all times", i.e. the
+    behaviour of every recording made before subtask labelling existed.
+    """
+    value = cfg.get("subtask_arms")
+    if value is None:
+        return []
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"subtask_arms must be a list, got {type(value).__name__}"
+        )
+
+    specs: List[SubtaskSpec] = []
+    for position, entry in enumerate(value):
+        if isinstance(entry, dict):
+            unknown = sorted(set(entry) - {"arm", "name"})
+            if unknown:
+                raise ValueError(
+                    f"subtask_arms[{position}] has unknown key(s) {unknown}; "
+                    "expected 'arm' and optionally 'name'"
+                )
+            raw_arm = entry.get("arm")
+            if raw_arm is None:
+                raise ValueError(f"subtask_arms[{position}] is missing 'arm'")
+            arm = str(raw_arm).strip().lower()
+            name = str(entry.get("name") or "").strip()
+        else:
+            arm = str(entry).strip().lower()
+            name = ""
+        if not arm:
+            raise ValueError(f"subtask_arms[{position}] has an empty arm name")
+        specs.append(SubtaskSpec(arm=arm, name=name))
+    return specs
+
+
+def resolve_subtask_arms(cfg: dict) -> List[str]:
+    """Acting arm per subtask; see :func:`resolve_subtasks`."""
+    return [spec.arm for spec in resolve_subtasks(cfg)]
+
+
+def resolve_subtask_names(cfg: dict) -> List[str]:
+    """Display name per subtask, empty string where the config gave none."""
+    return [spec.name for spec in resolve_subtasks(cfg)]
+
+
+def subtask_label(
+    subtask_names: List[str],
+    subtask_index: int,
+    subtask_count: int,
+    acting_arm: Optional[str] = None,
+) -> str:
+    """Operator-facing ``step 3/6 solid (right)``, 1-based for display."""
+    text = f"step {subtask_index + 1}/{subtask_count}"
+    if 0 <= subtask_index < len(subtask_names) and subtask_names[subtask_index]:
+        text += f" {subtask_names[subtask_index]}"
+    if acting_arm:
+        text += f" ({acting_arm})"
+    return text
+
+
+def validate_subtask_arms(subtask_arms: List[str], arm_keys: List[str]) -> None:
+    """Raise when the arm map names an arm this session is not recording."""
+    unknown = sorted(set(subtask_arms) - set(arm_keys))
+    if unknown:
+        raise ValueError(
+            f"subtask_arms names arm(s) {unknown} that this session is not recording "
+            f"(recording {list(arm_keys)}). Fix subtask_arms in the config, or adjust "
+            "--left/--right so every mapped arm is included."
+        )
+
+
+def acting_arm_for_subtask(subtask_arms: List[str], subtask_index: int) -> Optional[str]:
+    """Arm that follows Gello during ``subtask_index``, or None when unmapped."""
+    if not subtask_arms:
+        return None
+    if subtask_index < 0 or subtask_index >= len(subtask_arms):
+        return None
+    return subtask_arms[subtask_index]
+
+
+def arm_modes_for_subtask(
+    arm_keys: List[str],
+    subtask_arms: List[str],
+    subtask_index: int,
+) -> Dict[str, int]:
+    """Per-arm control_mode for a subtask: acting arm NORMAL, every other IDLE.
+
+    Returns an empty dict when ``subtask_index`` has no mapping, which callers
+    treat as "leave the current modes alone".
+    """
+    acting = acting_arm_for_subtask(subtask_arms, subtask_index)
+    if acting is None:
+        return {}
+    return {
+        arm: (
+            GelloControlModeClient.MODE_NORMAL
+            if arm == acting
+            else GelloControlModeClient.MODE_IDLE
+        )
+        for arm in arm_keys
+    }
 
 
 def resolve_transition_ready_services(services_cfg: dict, control_mode_services: List[str]) -> List[str]:
@@ -658,6 +937,11 @@ def start_recording_session(
     control_mode_client: GelloControlModeClient,
     stop_event: threading.Event,
     label: str,
+    arm_keys: Optional[List[str]] = None,
+    subtask_arms: Optional[List[str]] = None,
+    home_joint_names: Optional[dict[str, List[str]]] = None,
+    home_sender: Optional[RobotHomeSender] = None,
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]] = None,
 ) -> bool:
     if recording_state.is_recording:
         logging.warning("[%s] Recording is already active", label)
@@ -672,7 +956,32 @@ def start_recording_session(
         logging.info("[%s] Start ignored (debounced); GELLO left unchanged", label)
         return False
     recording_state.clear_transient_label()
-    control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=label)
+
+    # recording_state.start() reset the counter, so this is subtask 1's map.
+    arm_modes = arm_modes_for_subtask(
+        arm_keys or [], subtask_arms or [], recording_state.subtask_index
+    )
+    if not arm_modes:
+        control_mode_client.set_mode(GelloControlModeClient.MODE_NORMAL, label=label)
+        return True
+
+    # Pin the arms that sit out subtask 1 before handing Gello to the acting
+    # arm. Beyond holding them still, this seeds their action topic so the
+    # recording loop will write frames at all — see
+    # _publish_hold_at_current_state.
+    if home_sender is not None and home_joint_names is not None:
+        for arm_name, mode in sorted(arm_modes.items()):
+            if mode != GelloControlModeClient.MODE_IDLE:
+                continue
+            _publish_hold_at_current_state(
+                home_joint_names,
+                home_sender,
+                state_source,
+                arm_name,
+                label,
+                message="Idle for subtask 1; holding at current state",
+            )
+    control_mode_client.set_arm_modes(arm_modes, label=label)
     return True
 
 
@@ -732,6 +1041,56 @@ def _arm_non_gripper_max_delta(
     return max_delta
 
 
+def _publish_hold_at_current_state(
+    home_joint_names: dict[str, List[str]],
+    home_sender: RobotHomeSender,
+    state_source: Optional[Callable[[str], Optional["np.ndarray"]]],
+    arm_name: str,
+    label: str,
+    overrides: Optional[Dict[int, float]] = None,
+    message: str = "Hold-at-current-state published",
+) -> bool:
+    """Command ``arm_name`` to hold its current joint angles; True if published.
+
+    ``overrides`` replaces individual joint targets by index, which is how the
+    gripper-open pre-step moves one joint while pinning the rest.
+
+    Publishing this before an arm is parked at ``control_mode = IDLE`` does two
+    jobs. It holds the follower where it is, and it puts one message on the
+    arm's action topic — the only way ``ROSArmStateListener._latest_action``
+    ever becomes non-None. Without it, ``recording_loop``'s ``all_ready`` check
+    never passes for an arm that has been IDLE since startup (nobody publishes
+    for an idle arm) and the episode silently saves zero frames.
+    """
+    names = home_joint_names.get(arm_name, [])
+    if not names:
+        return False
+
+    current = state_source(arm_name) if state_source is not None else None
+    if current is None or len(current) < len(names):
+        logging.warning("[%s] current state unavailable; cannot hold arm in place", arm_name)
+        return False
+
+    positions = [float(current[i]) for i in range(len(names))]
+    for index, value in (overrides or {}).items():
+        positions[index] = float(value)
+
+    # Reuse the JointState publisher home_sender already owns so we don't race
+    # with it on the same action topic.
+    pub = home_sender._publishers.get(arm_name)
+    if pub is None:
+        return False
+
+    msg = JointStateMsg()
+    msg.header.stamp.sec = 3
+    msg.header.stamp.nanosec = 0
+    msg.name = list(names)
+    msg.position = positions
+    pub.publish(msg)
+    logging.info("[%s] [%s] %s", label, arm_name, message)
+    return True
+
+
 def _open_gripper_before_home(
     arm_configs: dict,
     home_positions: dict[str, List[float]],
@@ -766,34 +1125,20 @@ def _open_gripper_before_home(
         )
         return
 
-    current = state_source(arm_name) if state_source is not None else None
-    if current is None or len(current) < len(names):
-        logging.warning(
-            "[%s] current state unavailable; skipping gripper-open pre-step",
-            arm_name,
-        )
-        return
-
-    positions = [float(current[i]) for i in range(len(names))]
-    positions[g_idx] = float(home[g_idx])
-
-    # Reuse the JointState publisher home_sender already owns so we don't race
-    # with it on the same action topic.
-    pub = home_sender._publishers.get(arm_name)
-    if pub is None:
-        return
-
-    msg = JointStateMsg()
-    msg.header.stamp.sec = 3
-    msg.header.stamp.nanosec = 0
-    msg.name = list(names)
-    msg.position = positions
-    pub.publish(msg)
-    logging.info(
-        "[%s] [%s] Gripper-open published (idx %d, target %.4f); holding arm at current state",
-        label, arm_name, g_idx, positions[g_idx],
+    published = _publish_hold_at_current_state(
+        home_joint_names,
+        home_sender,
+        state_source,
+        arm_name,
+        label,
+        overrides={g_idx: float(home[g_idx])},
+        message=(
+            f"Gripper-open published (idx {g_idx}, target {float(home[g_idx]):.4f}); "
+            "holding arm at current state"
+        ),
     )
-    time.sleep(3.0)
+    if published:
+        time.sleep(3.0)
 
 
 def reset_recording_session(
@@ -991,6 +1336,52 @@ def cycle_recording_mode(control_mode_client: GelloControlModeClient, label: str
 
 # ── Recording thread ──────────────────────────────────────────────────────
 
+# Features declared with shape (1,) that LeRobot stores as scalar columns.
+_SCALAR_INT_COLUMNS = ("subtask_index",)
+
+
+def _coerce_scalar_episode_columns(dataset: "LeRobotDataset") -> None:
+    """Flatten buffered shape-(1,) int columns to Python ints before saving.
+
+    Works around a LeRobot + numpy-2.x mismatch, the same one dagger.py handles
+    for ``action_source``. ``get_hf_features_from_features`` special-cases a
+    shape-(1,) feature as a scalar ``datasets.Value("int64")`` column, but
+    ``add_frame`` validates each entry as an ndarray of shape (1,). At
+    ``save_episode`` time ``Dataset.from_dict`` calls ``int(value)`` per row,
+    which numpy 2.x refuses on a 1-D array with ``TypeError: only 0-dimensional
+    arrays can be converted to Python scalars`` — so without this every episode
+    fails to save.
+    """
+    writer = getattr(dataset, "writer", None)
+    if writer is None:
+        return
+    episode_buffer = getattr(writer, "episode_buffer", None)
+    if not episode_buffer:
+        return
+    for column in _SCALAR_INT_COLUMNS:
+        if column in episode_buffer:
+            episode_buffer[column] = [
+                int(np.asarray(value).reshape(-1)[0]) for value in episode_buffer[column]
+            ]
+
+
+def _warn_on_incomplete_subtasks(recording_state: RecordingState) -> None:
+    """Flag an episode that ended before the last subtask.
+
+    A missed pedal press is invisible in the video and mislabels every frame
+    after it, so surface it now, while re-recording the episode is still cheap.
+    """
+    subtask_index, subtask_count = recording_state.subtask_snapshot()
+    if subtask_count <= 0 or subtask_index == subtask_count - 1:
+        return
+    logging.warning(
+        "Episode %d ended on subtask %d/%d — a subtask advance was probably "
+        "missed, which mislabels every frame after it. Consider discarding and "
+        "re-recording this episode.",
+        recording_state.episode_idx - 1, subtask_index + 1, subtask_count,
+    )
+
+
 def recording_loop(
     state_left: Optional[ArmState],
     state_right: Optional[ArmState],
@@ -1083,6 +1474,9 @@ def recording_loop(
                     "action": np.concatenate(action_parts),
                     "observation.state": np.concatenate(state_parts),
                 }
+                subtask_index, subtask_count = recording_state.subtask_snapshot()
+                if subtask_count > 0:
+                    frame["subtask_index"] = np.asarray([subtask_index], dtype=np.int64)
                 raw_frames = [cam.get_frame() for cam in cameras]
                 for ci, cam in enumerate(cameras):
                     stale_for = cam.seconds_since_change()
@@ -1121,8 +1515,10 @@ def recording_loop(
                     recording_state.discard(label="recorder")
 
         if recording_state.take_save_request():
+            _warn_on_incomplete_subtasks(recording_state)
             if frames_in_episode > 0:
                 try:
+                    _coerce_scalar_episode_columns(dataset)
                     dataset.save_episode()
                     recording_stats.record_save()
                     logging.info(
@@ -1157,6 +1553,7 @@ def build_features(
     arm_joint_names: Dict[str, List[str]],
     cameras: List[CameraReader],
     resolution: Optional[Tuple[int, int]] = None,
+    subtask_count: int = 0,
 ) -> dict:
     joint_names = []
     for arm in arm_labels:
@@ -1177,6 +1574,15 @@ def build_features(
             "names": joint_names,
         },
     }
+    if subtask_count > 0:
+        # 0-based phase label for long-horizon episodes, mirroring dagger.py's
+        # action_source declaration. Shape (1,) is what LeRobot wants for a
+        # scalar column; see _coerce_scalar_episode_columns for the catch.
+        features["subtask_index"] = {
+            "dtype": "int64",
+            "shape": (1,),
+            "names": ["subtask_index"],
+        }
     for cam in sorted(cameras, key=lambda camera: camera.index):
         h = resolution[0] if resolution else cam.height
         w = resolution[1] if resolution else cam.width
@@ -1222,6 +1628,26 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=PEDAL_DEFAULT_DEVICE,
         help="evdev device path for the foot pedal (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--pedal-right-action",
+        choices=("cycle-mode", "subtask"),
+        default="cycle-mode",
+        help="What the RIGHT foot pedal does. 'cycle-mode' (default) cycles "
+             "GELLO NORMAL -> ROTATE_CW -> ROTATE_CCW. 'subtask' instead "
+             "advances the per-frame subtask_index label for long-horizon "
+             "episodes and hands GELLO to the arm listed for that subtask in "
+             "the config's subtask_arms (every other arm is held IDLE). "
+             "Keyboard 'm' still cycles mode either way, and in subtask mode "
+             "'n'/'b' step the label forward/back.",
+    )
+    parser.add_argument(
+        "--subtask-count",
+        type=int,
+        default=None,
+        help="Number of subtasks per episode. Defaults to the length of "
+             "subtask_arms in --config. Only used with "
+             "--pedal-right-action subtask.",
     )
     parser.add_argument("--resolution", type=int, nargs=2, default=None, metavar=("H", "W"),
                         help="Record at HxW resolution. Default: native camera resolution.")
@@ -1558,6 +1984,55 @@ def main() -> None:
     if use_pedal and not EVDEV_AVAILABLE:
         sys.exit("evdev is required for foot-pedal control. Install: pip install evdev")
 
+    # ── Subtask labelling ────────────────────────────────────────────────
+    subtask_mode = args.pedal_right_action == "subtask"
+    try:
+        subtask_specs = resolve_subtasks(cfg)
+    except ValueError as exc:
+        sys.exit(f"Invalid subtask_arms in {config_path}: {exc}")
+    subtask_arms = [spec.arm for spec in subtask_specs]
+    subtask_names = [spec.name for spec in subtask_specs]
+
+    if not subtask_mode:
+        # Keep every subtask code path inert, including the dataset column,
+        # so a cycle-mode session behaves exactly as it did before.
+        subtask_arms = []
+        subtask_names = []
+        subtask_count = 0
+    else:
+        if args.subtask_count is not None:
+            subtask_count = int(args.subtask_count)
+        elif subtask_arms:
+            subtask_count = len(subtask_arms)
+        else:
+            sys.exit(
+                "--pedal-right-action subtask needs to know how many subtasks an "
+                f"episode has: add a subtask_arms list to {config_path}, or pass "
+                "--subtask-count N."
+            )
+        if subtask_count < 1:
+            sys.exit(f"--subtask-count must be at least 1, got {subtask_count}")
+        if subtask_arms and len(subtask_arms) != subtask_count:
+            sys.exit(
+                f"--subtask-count {subtask_count} disagrees with the "
+                f"{len(subtask_arms)} entries in subtask_arms ({config_path}); the "
+                "label range and the arm map must describe the same subtasks."
+            )
+        try:
+            validate_subtask_arms(subtask_arms, arm_keys)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        logging.info(
+            "Subtask labelling ON: %d subtasks — %s",
+            subtask_count,
+            ", ".join(
+                subtask_label(
+                    subtask_names, i, subtask_count, acting_arm_for_subtask(subtask_arms, i)
+                )
+                for i in range(subtask_count)
+            ),
+        )
+
     try:
         camera_configs = load_camera_configs(cfg, selected_arms=arm_keys)
         camera_grid_columns = load_camera_grid_columns(cfg)
@@ -1630,7 +2105,7 @@ def main() -> None:
     transition_ready_client = GelloTransitionReadyClient(node, transition_ready_services)
     reset_service_client = ResetServiceClient(node, reset_service_names)
     reset_request_client = ResetRequestClient(node, ["/reset"]) if use_reset_client else None
-    recording_state = RecordingState()
+    recording_state = RecordingState(subtask_count=subtask_count)
     home_positions: dict[str, List[float]] = {}
     home_joint_names: dict[str, List[str]] = {}
 
@@ -1784,7 +2259,13 @@ def main() -> None:
         wrap_manager = WrapJointManager(wrap_joint_suffixes)
         wrap_manager.configure({arm: home_joint_names.get(arm, []) for arm in arm_keys})
 
-        features = build_features(arm_labels, home_joint_names, cameras, resolution=args.resolution)
+        features = build_features(
+            arm_labels,
+            home_joint_names,
+            cameras,
+            resolution=args.resolution,
+            subtask_count=subtask_count,
+        )
         if _can_resume:
             logging.info(f"Resuming existing dataset at {root}")
             dataset = LeRobotDataset.resume(
@@ -1792,6 +2273,25 @@ def main() -> None:
                 root=root,
                 image_writer_threads=n_threads,
             )
+            # A resumed dataset keeps the schema it was created with, so a
+            # subtask-mode run appending to a pre-subtask dataset (or the
+            # reverse) would produce episodes whose label column disagrees with
+            # the rest of the dataset. Refuse instead of silently splitting it.
+            existing_features = set(getattr(dataset.meta, "features", {}) or {})
+            if subtask_count > 0 and "subtask_index" not in existing_features:
+                sys.exit(
+                    f"{root} was recorded without a 'subtask_index' column, so "
+                    "subtask-labelled episodes cannot be appended to it. Record into "
+                    "a fresh --name, or backfill the column onto this dataset first "
+                    "(src/lerobot_ros2/cli/add_action_source_to_base.py does the same "
+                    "job for action_source and is the pattern to copy)."
+                )
+            if subtask_count == 0 and "subtask_index" in existing_features:
+                sys.exit(
+                    f"{root} has a 'subtask_index' column, but this run is not in "
+                    "subtask mode so every new frame would be missing its label. "
+                    "Re-run with --pedal-right-action subtask."
+                )
         else:
             dataset = LeRobotDataset.create(
                 repo_id=repo_id,
@@ -1805,6 +2305,20 @@ def main() -> None:
 
         readers_by_name = {reader.name: reader for reader in cameras}
         resolved_cfg = build_recording_snapshot(cfg, camera_configs, readers_by_name)
+        # The pedal mapping is a launch-time flag, so record it alongside the
+        # config: after the fact there is no other way to tell whether a
+        # dataset's right-pedal presses meant "rotate" or "next subtask".
+        resolved_cfg["recording"] = {
+            **(resolved_cfg.get("recording") or {}),
+            "pedal_right_action": args.pedal_right_action,
+            # subtask_names is what makes the stored index readable later; without
+            # it, "subtask_index == 2" means nothing six months from now.
+            **(
+                {"subtask_count": subtask_count, "subtask_names": list(subtask_names)}
+                if subtask_count > 0
+                else {}
+            ),
+        }
         with open(root / "recording_config.yaml", "w") as f:
             yaml.safe_dump(resolved_cfg, f, sort_keys=False)
 
@@ -1822,13 +2336,30 @@ def main() -> None:
             _banner += (
                 "  Keyboard: 's' start/stop | 'd' discard/reset | 'r' reset | 'm' cycle mode | 'q' quit\n"
             )
+            if subtask_mode:
+                _banner += "            'n' next subtask | 'b' previous subtask\n"
         if use_pedal:
             _banner += (
-                "  Pedal:    LEFT start/stop | MIDDLE discard/reset | RIGHT cycle mode\n"
+                "  Pedal:    LEFT start/stop | MIDDLE discard/reset | RIGHT "
+                + ("next subtask\n" if subtask_mode else "cycle mode\n")
             )
         _banner += (
             f"  GELLO mode: {GelloControlModeClient.mode_label(control_mode_client.mode)} ({control_mode_client.mode})\n"
         )
+        if subtask_mode:
+            _banner += f"  Subtasks: episodes start on step 1/{subtask_count}; press RIGHT to advance.\n"
+            for i in range(subtask_count):
+                _banner += (
+                    "            "
+                    + subtask_label(
+                        subtask_names, i, subtask_count, acting_arm_for_subtask(subtask_arms, i)
+                    )
+                    + "\n"
+                )
+            _banner += (
+                "            The idle arm holds its pose — you can let go of that GELLO\n"
+                "            leader, but park it near the follower before it goes live again.\n"
+            )
         logging.info(_banner)
         logging.info(f"Dataset -> {root.resolve()}  "
                      f"(episodes so far: {dataset.meta.total_episodes})")
@@ -1837,14 +2368,24 @@ def main() -> None:
 
         recording_state.episode_idx = dataset.meta.total_episodes
         command_executor = UserCommandExecutor()
-        mode_cycle_lock = threading.Lock()
-        mode_cycle_pending = 0
-        mode_cycle_worker_running = False
+        transition_lock = threading.Lock()
+        transition_queue: Deque[Tuple[str, Callable[[], None]]] = deque()
+        transition_worker_running = False
 
         def _submit_toggle(source: str) -> None:
             def _action() -> None:
                 if not recording_state.is_recording:
-                    start_recording_session(recording_state, control_mode_client, stop_event, label=source)
+                    start_recording_session(
+                        recording_state,
+                        control_mode_client,
+                        stop_event,
+                        label=source,
+                        arm_keys=arm_keys,
+                        subtask_arms=subtask_arms,
+                        home_joint_names=home_joint_names,
+                        home_sender=home_sender,
+                        state_source=_home_state_source,
+                    )
                 else:
                     stop_recording_session(recording_state, control_mode_client, label=source)
             command_executor.submit(source, "toggle", _action)
@@ -1903,51 +2444,110 @@ def main() -> None:
 
             _submit_local_reset(source)
 
-        def _submit_cycle_mode(source: str) -> None:
-            nonlocal mode_cycle_pending, mode_cycle_worker_running
+        def _run_with_transition_pause(source: str, request_mode: Callable[[], None]) -> None:
+            """Queue a GELLO mode change behind a capture pause + resume wait.
+
+            Capture is paused so the arm-settling transient never reaches the
+            dataset, ``request_mode`` asks for the new mode, and we block on the
+            transition-ready service until GELLO publishes again. Requests are
+            serialised through one worker so rapid presses can't interleave
+            mode writes or unpause capture while a later change is still
+            settling.
+            """
+            nonlocal transition_worker_running
 
             recording_state.set_transition_pending(True)
             if recording_state.is_recording:
                 recording_state.set_capture_paused(True)
 
-            with mode_cycle_lock:
-                mode_cycle_pending += 1
-                should_start_worker = not mode_cycle_worker_running
+            with transition_lock:
+                transition_queue.append((source, request_mode))
+                should_start_worker = not transition_worker_running
                 if should_start_worker:
-                    mode_cycle_worker_running = True
+                    transition_worker_running = True
 
             if should_start_worker:
                 threading.Thread(
-                    target=_cycle_mode_with_pause,
-                    args=(source,),
-                    name=f"mode-cycle-{source}",
+                    target=_drain_transition_queue,
+                    name=f"gello-transition-{source}",
                     daemon=True,
                 ).start()
 
-        def _cycle_mode_with_pause(source: str) -> None:
-            nonlocal mode_cycle_pending, mode_cycle_worker_running
+        def _drain_transition_queue() -> None:
+            nonlocal transition_worker_running
 
             transition_confirmed = True
             try:
                 while True:
-                    with mode_cycle_lock:
-                        if mode_cycle_pending <= 0:
+                    with transition_lock:
+                        if not transition_queue:
                             break
-                        mode_cycle_pending -= 1
+                        source, request_mode = transition_queue.popleft()
 
-                    cycle_recording_mode(control_mode_client, label=source)
+                    request_mode()
                     transition_confirmed = transition_ready_client.wait_for_resume(label=source)
                     if not transition_confirmed:
                         logging.warning("[%s] Transition completion not confirmed; keeping WAITING state", source)
                         break
             finally:
-                with mode_cycle_lock:
-                    mode_cycle_worker_running = False
-                    queued_left = mode_cycle_pending
+                with transition_lock:
+                    transition_worker_running = False
+                    queued_left = len(transition_queue)
 
                 if transition_confirmed and queued_left == 0:
                     recording_state.set_transition_pending(False)
                     recording_state.set_capture_paused(False)
+
+        def _submit_cycle_mode(source: str) -> None:
+            _run_with_transition_pause(
+                source, lambda: cycle_recording_mode(control_mode_client, label=source)
+            )
+
+        def _submit_step_subtask(source: str, delta: int) -> None:
+            def _action() -> None:
+                previous_index = recording_state.subtask_index
+                new_index = (
+                    recording_state.advance_subtask(label=source)
+                    if delta > 0
+                    else recording_state.retreat_subtask(label=source)
+                )
+                if new_index is None:
+                    return
+
+                acting_before = acting_arm_for_subtask(subtask_arms, previous_index)
+                acting_after = acting_arm_for_subtask(subtask_arms, new_index)
+                logging.info(
+                    "[%s] %s -> %s",
+                    source,
+                    subtask_label(subtask_names, previous_index, subtask_count, acting_before),
+                    subtask_label(subtask_names, new_index, subtask_count, acting_after),
+                )
+                recording_state.set_subtask_flash(
+                    subtask_label(subtask_names, new_index, subtask_count).upper(),
+                    duration_s=1.5,
+                )
+
+                if acting_after == acting_before:
+                    # The same arm keeps Gello, so this press is a pure label
+                    # change: no service call, no capture pause, and therefore no
+                    # discontinuity in the middle of the recorded trajectory.
+                    return
+
+                arm_modes = arm_modes_for_subtask(arm_keys, subtask_arms, new_index)
+                if not arm_modes:
+                    return
+                # No hold publish needed here, unlike at episode start: IDLE
+                # itself pins the outgoing arm, and its action topic has been
+                # live for the frames it just drove.
+                logging.info(
+                    "[%s] Handing Gello: %s -> %s (pausing capture while it settles)",
+                    source, acting_before or "all", acting_after,
+                )
+                _run_with_transition_pause(
+                    source, lambda: control_mode_client.set_arm_modes(arm_modes, label=source)
+                )
+
+            command_executor.submit(source, f"subtask{delta:+d}", _action)
 
         # ── Recording thread ─────────────────────────────────────────────
         record_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
@@ -1981,7 +2581,11 @@ def main() -> None:
                 stop_event=stop_event,
                 on_toggle=lambda: _submit_toggle("pedal"),
                 on_discard=lambda: _submit_discard_or_reset("pedal"),
-                on_reset=lambda: _submit_cycle_mode("pedal"),
+                on_reset=(
+                    (lambda: _submit_step_subtask("pedal", 1))
+                    if subtask_mode
+                    else (lambda: _submit_cycle_mode("pedal"))
+                ),
             )
             pedal_thread.start()
 
@@ -1991,6 +2595,8 @@ def main() -> None:
             cam_labels = [c.display_label for c in cameras]
             if use_keyboard:
                 win = "record.py — Q/ESC quit | S start/stop | D discard/reset | R reset | M cycle mode"
+                if subtask_mode:
+                    win += " | N/B subtask"
             else:
                 win = "record.py — live preview — Q/ESC quit (record via pedal)"
 
@@ -2036,9 +2642,21 @@ def main() -> None:
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
                 elif recording_state.is_recording:
                     label = f"  REC  ep {recording_state.episode_idx}"
-                    cv2.putText(canvas, label, (disp_w - 300, disp_h - 16),
+                    subtask_index, live_subtask_count = recording_state.subtask_snapshot()
+                    if live_subtask_count > 0:
+                        label += "  " + subtask_label(
+                            subtask_names,
+                            subtask_index,
+                            live_subtask_count,
+                            acting_arm_for_subtask(subtask_arms, subtask_index) or "all",
+                        )
+                    # Right-align: the subtask suffix makes the label too wide
+                    # for a fixed offset.
+                    (label_w, _lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 4)
+                    label_origin = (max(16, disp_w - label_w - 16), disp_h - 16)
+                    cv2.putText(canvas, label, label_origin,
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 200), 4)
-                    cv2.putText(canvas, label, (disp_w - 300, disp_h - 16),
+                    cv2.putText(canvas, label, label_origin,
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 255), 2)
                 elif recording_state.is_resetting:
                     label = f"RESET  ep {recording_state.episode_idx}"
@@ -2066,6 +2684,23 @@ def main() -> None:
                     cv2.putText(canvas, label, (disp_w - 280, disp_h - 16),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (180, 180, 180), 1)
 
+                # Drawn independently of the status-line branches above so it is
+                # visible mid-episode, which is the only time it fires. Large and
+                # centered because the operator glances up for a fraction of a
+                # second while both hands are on the GELLO leaders.
+                if (flash := recording_state.get_subtask_flash()) is not None:
+                    flash_scale = max(0.9, disp_w / 640.0)
+                    flash_thick = max(3, int(flash_scale * 2))
+                    (fw, fh), _ = cv2.getTextSize(
+                        flash, cv2.FONT_HERSHEY_SIMPLEX, flash_scale, flash_thick
+                    )
+                    fx = max(8, (disp_w - fw) // 2)
+                    fy = fh + 28
+                    cv2.putText(canvas, flash, (fx, fy), cv2.FONT_HERSHEY_SIMPLEX,
+                                flash_scale, (0, 0, 0), flash_thick + 4)
+                    cv2.putText(canvas, flash, (fx, fy), cv2.FONT_HERSHEY_SIMPLEX,
+                                flash_scale, (60, 255, 255), flash_thick)
+
                 if stabilization_count:
                     stab_text = f"STAB ON ({stabilization_count}/{viz_stabilizer.num_cameras})"
                     cv2.putText(canvas, stab_text, (16, 34),
@@ -2077,6 +2712,7 @@ def main() -> None:
                     f"MODE {GelloControlModeClient.mode_label(control_mode_client.mode)} "
                     f"({control_mode_client.mode})"
                 )
+                mode_text += "  PEDAL SUBTASK" if subtask_mode else "  PEDAL MODE-CYCLE"
                 if control_mode_client.mode == GelloControlModeClient.MODE_IDLE:
                     gello_dot_color = (0, 0, 255)
                 elif recording_state.is_transition_pending:
@@ -2116,6 +2752,10 @@ def main() -> None:
                             _submit_reset("keyboard")
                         elif key in (ord('m'), ord('M')):
                             _submit_cycle_mode("keyboard")
+                        elif subtask_mode and key in (ord('n'), ord('N')):
+                            _submit_step_subtask("keyboard", 1)
+                        elif subtask_mode and key in (ord('b'), ord('B')):
+                            _submit_step_subtask("keyboard", -1)
 
                 # A camera died: hold the big "CAM STUCK" banner on screen long
                 # enough for the teleoperator to read it before we exit + save.
@@ -2127,15 +2767,16 @@ def main() -> None:
                         )
                         preview.render(frames, _draw_record_overlay)
         elif dataset is not None and use_keyboard:
-            run_cbreak_keyboard_loop(
-                stop_event,
-                {
-                    "s": lambda: _submit_toggle("keyboard"),
-                    "r": lambda: _submit_reset("keyboard"),
-                    "d": lambda: _submit_discard_or_reset("keyboard"),
-                    "m": lambda: _submit_cycle_mode("keyboard"),
-                },
-            )
+            keyboard_handlers: Dict[str, Callable[[], None]] = {
+                "s": lambda: _submit_toggle("keyboard"),
+                "r": lambda: _submit_reset("keyboard"),
+                "d": lambda: _submit_discard_or_reset("keyboard"),
+                "m": lambda: _submit_cycle_mode("keyboard"),
+            }
+            if subtask_mode:
+                keyboard_handlers["n"] = lambda: _submit_step_subtask("keyboard", 1)
+                keyboard_handlers["b"] = lambda: _submit_step_subtask("keyboard", -1)
+            run_cbreak_keyboard_loop(stop_event, keyboard_handlers)
         elif dataset is not None:
             _active = []
             if use_pedal:
@@ -2157,6 +2798,7 @@ def main() -> None:
         try:
             if dataset is not None and recording_state.is_recording:
                 logging.info("Saving in-progress episode before exit...")
+                _coerce_scalar_episode_columns(dataset)
                 dataset.save_episode()
                 recording_stats.record_save()
                 recording_stats.write(stats_path, args.hz)

@@ -55,6 +55,7 @@ lerobot-ros-plateau-stats = "lerobot_ros2.cli.plateau_stats:main"
 lerobot-ros-plateau-visualize = "lerobot_ros2.cli.plateau_visualize:main"
 lerobot-ros-trim-tail = "lerobot_ros2.cli.trim_tail:main"
 lerobot-ros-cut = "lerobot_ros2.cli.cut:main"
+lerobot-ros-fix-subtasks = "lerobot_ros2.cli.fix_subtasks:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
