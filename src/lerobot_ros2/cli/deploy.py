@@ -53,6 +53,7 @@ from lerobot_ros2.helper import (
     WrapJointManager,
     _slugify_camera_name,
     extract_home_joint_names,
+    extract_home_positions,
     load_arm_configs,
     load_camera_configs,
     load_config,
@@ -76,6 +77,14 @@ from lerobot_ros2.cli.record import (
     _arm_non_gripper_max_delta,
     _open_gripper_before_home,
 )
+
+# A joint state older than this means the UR driver stopped publishing, so the
+# cached reading says nothing about where the arm actually is.
+_STATE_MAX_AGE_S = 1.0
+# Extra window, past send_home's own settle sleeps, for a slow trajectory to
+# finish before we call the homing attempt failed.
+_HOME_SETTLE_TIMEOUT_S = 15.0
+_HOME_MAX_ATTEMPTS = 2
 
 try:
     import rclpy
@@ -207,21 +216,72 @@ def parse_fullres_crop_args(entries: Optional[list]) -> Dict[str, Dict[str, int]
     return crops
 
 
+def experiment_config_defines_home(path: Path) -> bool:
+    """True if ``path`` is a YAML file carrying ``home_positions`` for an arm.
+
+    Only a file with an actual home pose is usable here. Anything else (a
+    plateau/filter sidecar, a bare camera config, ...) makes ``resolve_home``
+    fall back to the *live* robot state, which silently turns "home" into
+    "wherever the arms happened to be when deploy launched".
+    """
+    try:
+        parsed = load_experiment_home_config(path)
+    except (OSError, yaml.YAMLError):
+        return False
+    positions = extract_home_positions(parsed)
+    names = extract_home_joint_names(parsed)
+    return any(positions.get(arm) and names.get(arm) for arm in ("left", "right"))
+
+
+def find_experiment_config_candidates(*search_roots: Optional[str]) -> List[Path]:
+    """Walk up from each root looking for configs that define a home pose."""
+    found: List[Path] = []
+    for root in search_roots:
+        if not root:
+            continue
+        base_path = Path(root)
+        if not base_path.exists():
+            continue
+        for parent in (base_path, *base_path.parents):
+            for candidate_name in ("experiment_config.yaml", "recording_config.yaml", "config.yaml"):
+                candidate = parent / candidate_name
+                if (
+                    candidate.exists()
+                    and candidate not in found
+                    and experiment_config_defines_home(candidate)
+                ):
+                    found.append(candidate)
+    return found
+
+
 def resolve_experiment_config_path(policy_path: str, explicit_path: Optional[str]) -> Optional[Path]:
+    """Locate the config that supplies the home pose.
+
+    An explicit ``--experiment-config`` wins, but only if it actually defines a
+    home pose; otherwise we fall back to searching next to that file (the
+    dataset directory usually holds the real ``experiment_config.yaml`` a few
+    levels up) and then next to the checkpoint.
+    """
     if explicit_path:
         path = Path(explicit_path)
+        if path.exists() and experiment_config_defines_home(path):
+            return path
+        if not path.exists():
+            logging.warning("Requested experiment config %s does not exist", path)
+        else:
+            logging.warning(
+                "Experiment config %s has no 'home_positions' for either arm; "
+                "searching nearby directories for one that does",
+                path,
+            )
+        fallback = find_experiment_config_candidates(explicit_path, policy_path)
+        if fallback:
+            logging.warning("Falling back to experiment config %s", fallback[0])
+            return fallback[0]
         return path if path.exists() else None
 
-    base_path = Path(policy_path)
-    if not base_path.exists():
-        return None
-
-    for parent in (base_path, *base_path.parents):
-        for candidate_name in ("experiment_config.yaml", "recording_config.yaml", "config.yaml"):
-            candidate = parent / candidate_name
-            if candidate.exists():
-                return candidate
-    return None
+    candidates = find_experiment_config_candidates(policy_path)
+    return candidates[0] if candidates else None
 
 
 def resolve_recording_config_path(policy_path: str, explicit_path: Optional[str]) -> Optional[Path]:
@@ -493,6 +553,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-config", type=str, default=None,
                         help="Path to experiment_config.yaml saved with the dataset.")
     parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help=(
+            "Where to write the deployments/<timestamp>/ rollout videos and "
+            "deployment_info.yaml. Defaults to the policy directory, which "
+            "mixes runs from a shared checkpoint together; point this at a "
+            "per-experiment directory to keep them separate."
+        ),
+    )
+    parser.add_argument(
         "--camera-settings",
         type=str,
         default=None,
@@ -734,7 +805,10 @@ def main() -> None:
             )
 
     run_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    snapshot_dir = Path(args.policy) if Path(args.policy).is_dir() else Path(args.policy).parent
+    if args.output_dir:
+        snapshot_dir = Path(args.output_dir)
+    else:
+        snapshot_dir = Path(args.policy) if Path(args.policy).is_dir() else Path(args.policy).parent
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Per-run deployment video recording ───────────────────────────────
@@ -890,6 +964,33 @@ def main() -> None:
             )
             sys.exit(1)
 
+    # resolve_home() falls back to the live joint state for any arm the config
+    # doesn't cover. That fallback is fine for record.py (which is *defining*
+    # home) but never for deploy: it makes "home" mean "the pose the arms were
+    # in when this process launched", so the first rollout skips homing
+    # entirely (zero delta) and every later reset parks at an arbitrary pose.
+    config_home_positions = extract_home_positions(experiment_config)
+    arms_without_config_home = [k for k in arm_keys if not config_home_positions.get(k)]
+    if arms_without_config_home:
+        candidates = find_experiment_config_candidates(args.experiment_config, args.policy)
+        hint = (
+            "Candidate configs that do define a home pose:\n  "
+            + "\n  ".join(str(p) for p in candidates)
+            if candidates
+            else "No config with 'home_positions' was found near the checkpoint. "
+            "Re-record or copy the experiment_config.yaml saved with the dataset."
+        )
+        logging.error(
+            "No home pose configured for arm(s) %s (experiment config: %s). Deploy "
+            "would otherwise use the arms' current pose as home, which means the "
+            "robot never actually homes before a rollout. Pass --experiment-config "
+            "pointing at a file with 'home_positions'.\n%s",
+            arms_without_config_home,
+            experiment_config_path or "<none>",
+            hint,
+        )
+        sys.exit(1)
+
     try:
         wrap_joint_suffixes = resolve_wrap_joints(cfg)
     except ValueError as exc:
@@ -900,7 +1001,10 @@ def main() -> None:
         reader = state_readers.get(arm_name)
         if reader is None:
             return None
-        return reader.get_joint_pos()
+        # Reject stale samples: a protective stop or a dropped hardware
+        # interface freezes the topic, and the last cached reading would then
+        # make a motionless arm look like it reached (or is already at) home.
+        return reader.get_joint_pos(max_age_s=_STATE_MAX_AGE_S)
 
     home_sender = RobotHomeSender(
         node,
@@ -1053,81 +1157,131 @@ def main() -> None:
             args.hz,
         )
 
-    def _robust_home() -> None:
+    def _wait_for_arms_at_home(arms: List[str], timeout_s: float) -> Dict[str, Optional[float]]:
+        """Poll until every arm in ``arms`` is within the verify tolerance.
+
+        Returns the last measured per-arm delta (``None`` when the state feed
+        went stale). Exits as soon as all arms are home, so this costs nothing
+        in the normal case and only burns wall-clock on a slow trajectory.
+        """
+        deadline = time.monotonic() + timeout_s
+        deltas: Dict[str, Optional[float]] = {}
+        while True:
+            deltas = {
+                arm: _arm_non_gripper_max_delta(
+                    arm_configs, home_positions, arm_joint_names, _home_state_source, arm
+                )
+                for arm in arms
+            }
+            if all(d is not None and d <= _HOME_VERIFY_TOL_RAD for d in deltas.values()):
+                return deltas
+            if time.monotonic() >= deadline:
+                return deltas
+            time.sleep(0.1)
+
+    def _robust_home() -> bool:
         """Home the arms safely (mirrors record.py's reset sequence).
 
         1. open right gripper, then left gripper
         2. home only arms that aren't already essentially at home — republishing
            a zero-delta home trajectory can fault the custom UR bridge (e.g.
            "too high voltage") and require a controller restart
-        3. verify each arm ended up at home and log loudly if one didn't
+        3. verify each arm ended up at home, retrying once before giving up
+
+        Returns True only when every arm is confirmed at home; the caller must
+        not start the policy otherwise.
         """
         home_order = [a for a in ("right", "left") if a in home_positions]
 
-        for arm in home_order:
-            _open_gripper_before_home(
-                arm_configs,
-                home_positions,
-                arm_joint_names,
-                home_sender,
-                _home_state_source,
-                arm,
-                label="deploy",
-            )
-
-        homing_arms: List[str] = []
-        for arm in home_order:
-            delta = _arm_non_gripper_max_delta(
-                arm_configs, home_positions, arm_joint_names, _home_state_source, arm
-            )
-            if delta is None:
-                # State unavailable — be safe and publish.
-                homing_arms.append(arm)
-                continue
-            if delta < _HOME_SKIP_TOL_RAD:
-                logging.info(
-                    "[deploy] [%s] already at home (max_delta=%.4f rad); "
-                    "skipping home publish",
-                    arm, delta,
-                )
-                continue
-            homing_arms.append(arm)
-
-        if homing_arms:
-            ordered_home_positions = {a: home_positions[a] for a in homing_arms}
-            ordered_home_joint_names = {a: arm_joint_names[a] for a in homing_arms}
-            home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
-
-        any_stuck = False
-        for arm in home_order:
-            delta = _arm_non_gripper_max_delta(
-                arm_configs, home_positions, arm_joint_names, _home_state_source, arm
-            )
-            if delta is None:
-                logging.warning(
-                    "[deploy] [%s] post-home verification skipped — state unavailable",
+        for attempt in range(1, _HOME_MAX_ATTEMPTS + 1):
+            for arm in home_order:
+                _open_gripper_before_home(
+                    arm_configs,
+                    home_positions,
+                    arm_joint_names,
+                    home_sender,
+                    _home_state_source,
                     arm,
+                    label="deploy",
                 )
-                continue
-            if delta > _HOME_VERIFY_TOL_RAD:
-                any_stuck = True
-                logging.error(
-                    "[deploy] [%s] DID NOT REACH HOME after homing "
-                    "(max_delta=%.3f rad, tol=%.3f). The arm controller likely "
-                    "did not execute the trajectory — possible protective stop, "
-                    "fault (e.g. too high voltage), inactive controller, or dead "
-                    "hardware interface. Check the ur_robotiq container logs and "
-                    "`ros2 control list_hardware_components`. A driver restart is "
-                    "likely required.",
-                    arm, delta, _HOME_VERIFY_TOL_RAD,
+
+            homing_arms: List[str] = []
+            for arm in home_order:
+                delta = _arm_non_gripper_max_delta(
+                    arm_configs, home_positions, arm_joint_names, _home_state_source, arm
                 )
-            else:
-                logging.info("[deploy] [%s] at home (max_delta=%.4f rad)", arm, delta)
-        if any_stuck:
-            logging.error(
-                "[deploy] Homing finished with at least one arm NOT at home; "
-                "running the policy is unsafe until the controller is recovered."
-            )
+                if delta is None:
+                    # State unavailable — be safe and publish.
+                    logging.warning(
+                        "[deploy] [%s] no fresh joint state (topic stale for >%.1fs); "
+                        "publishing home anyway",
+                        arm, _STATE_MAX_AGE_S,
+                    )
+                    homing_arms.append(arm)
+                    continue
+                if delta < _HOME_SKIP_TOL_RAD:
+                    logging.info(
+                        "[deploy] [%s] already at home (max_delta=%.4f rad); "
+                        "skipping home publish",
+                        arm, delta,
+                    )
+                    continue
+                homing_arms.append(arm)
+
+            if homing_arms:
+                logging.info(
+                    "[deploy] homing %s (attempt %d/%d)",
+                    homing_arms, attempt, _HOME_MAX_ATTEMPTS,
+                )
+                ordered_home_positions = {a: home_positions[a] for a in homing_arms}
+                ordered_home_joint_names = {a: arm_joint_names[a] for a in homing_arms}
+                home_sender.send_home(ordered_home_positions, ordered_home_joint_names)
+
+            # send_home's fixed settle sleeps assume the trajectory finishes in
+            # time; give a slow arm a bounded extra window rather than
+            # declaring failure the instant the sleep expires.
+            deltas = _wait_for_arms_at_home(home_order, _HOME_SETTLE_TIMEOUT_S)
+
+            stuck: List[str] = []
+            for arm in home_order:
+                delta = deltas.get(arm)
+                if delta is None:
+                    stuck.append(arm)
+                    logging.error(
+                        "[deploy] [%s] cannot verify home — no joint state for "
+                        "more than %.1fs. The UR driver has likely stopped "
+                        "publishing (protective stop or dead hardware interface).",
+                        arm, _STATE_MAX_AGE_S,
+                    )
+                elif delta > _HOME_VERIFY_TOL_RAD:
+                    stuck.append(arm)
+                    logging.error(
+                        "[deploy] [%s] DID NOT REACH HOME after homing "
+                        "(max_delta=%.3f rad, tol=%.3f). The arm controller likely "
+                        "did not execute the trajectory — possible protective stop, "
+                        "fault (e.g. too high voltage), inactive controller, or dead "
+                        "hardware interface. Check the ur_robotiq container logs and "
+                        "`ros2 control list_hardware_components`. A driver restart is "
+                        "likely required.",
+                        arm, delta, _HOME_VERIFY_TOL_RAD,
+                    )
+                else:
+                    logging.info("[deploy] [%s] at home (max_delta=%.4f rad)", arm, delta)
+
+            if not stuck:
+                return True
+            if attempt < _HOME_MAX_ATTEMPTS:
+                logging.warning(
+                    "[deploy] retrying home for %s (attempt %d/%d)",
+                    stuck, attempt + 1, _HOME_MAX_ATTEMPTS,
+                )
+
+        logging.error(
+            "[deploy] Homing FAILED after %d attempt(s); the policy will NOT be "
+            "started. Recover the arm controller, then press SPACE again.",
+            _HOME_MAX_ATTEMPTS,
+        )
+        return False
 
     def _start_new_episode() -> None:
         nonlocal episode_count, has_run_once
@@ -1149,7 +1303,12 @@ def main() -> None:
         wrap_manager.reset_episode()
         stabilizer.reset()
         logging.info("REPLAY — homing, then restarting policy")
-        _robust_home()
+        if not _robust_home():
+            # Starting a rollout from a pose that isn't home means the policy
+            # runs from an initial state it was never trained on, so leave the
+            # loop idle and let the operator recover the controller first.
+            logging.error("REPLAY — NOT starting policy: arms are not at home")
+            return
         episode_count += 1
         _open_episode_grid_writer(episode_count)
         # Seed wrap-joint offsets from the home pose we just commanded, not

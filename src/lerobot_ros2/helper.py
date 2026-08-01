@@ -989,6 +989,7 @@ class ROSJointReader:
     def __init__(self, node: "Node", topic: str, label: str = "") -> None:
         self._latest: Optional[np.ndarray] = None
         self._latest_names: List[str] = []
+        self._latest_rx: Optional[float] = None
         self._lock = threading.Lock()
         self._ready = False
 
@@ -1002,11 +1003,36 @@ class ROSJointReader:
         with self._lock:
             self._latest = np.array(msg.position, dtype=np.float32)
             self._latest_names = list(msg.name) if hasattr(msg, "name") else []
+            self._latest_rx = time.monotonic()
             self._ready = True
 
-    def get_joint_pos(self) -> Optional[np.ndarray]:
+    def get_joint_pos(self, max_age_s: Optional[float] = None) -> Optional[np.ndarray]:
+        """Latest cached joint positions, or ``None`` if never received.
+
+        Pass ``max_age_s`` to also reject samples older than that. A UR driver
+        that protective-stops or drops its hardware interface simply stops
+        publishing, leaving the last sample cached forever; callers that reason
+        about *where the arm is right now* (e.g. "is it already at home?") must
+        not trust a frozen reading.
+        """
         with self._lock:
-            return self._latest.copy() if self._latest is not None else None
+            if self._latest is None:
+                return None
+            if (
+                max_age_s is not None
+                and self._latest_rx is not None
+                and (time.monotonic() - self._latest_rx) > max_age_s
+            ):
+                return None
+            return self._latest.copy()
+
+    @property
+    def age(self) -> Optional[float]:
+        """Seconds since the last joint state arrived, or ``None`` if never."""
+        with self._lock:
+            if self._latest_rx is None:
+                return None
+            return time.monotonic() - self._latest_rx
 
     def get_joint_names(self) -> List[str]:
         with self._lock:

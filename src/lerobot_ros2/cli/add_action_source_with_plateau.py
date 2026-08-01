@@ -70,6 +70,12 @@ def _load_action_episode_existing_as(
     """Read ``action``, ``episode_index``, and optional ``action_source`` from parquets."""
     data_dir = src / "data"
     parts = sorted(data_dir.rglob("*.parquet"))
+    # A chunk holds no rows when every episode it covered was dropped upstream
+    # (e.g. by downsample). It contributes no frames, so drop it before the
+    # schema probe and the concatenation below.
+    parts = [p for p in parts if pq.read_metadata(p).num_rows > 0]
+    if not parts:
+        raise SystemExit(f"No non-empty parquet files found under {data_dir}")
     actions: list[np.ndarray] = []
     eps: list[np.ndarray] = []
     has_existing = "action_source" in pq.read_schema(parts[0]).names
