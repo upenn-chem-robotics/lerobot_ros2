@@ -137,7 +137,7 @@ camera_defaults:
 
 left_cameras:
   left_wrist_top:
-    port: /dev/video0
+    port: /dev/video4
     settings:
       # Autofocus + zoom are disabled via camera_defaults; this pins the fixed
       # focus distance. Tune this integer (typically 0-255) until the target is
@@ -153,7 +153,7 @@ left_cameras:
 
 right_cameras:
   right_wrist_top:
-    port: /dev/video1
+    port: /dev/video0
     settings:
       focus_automatic_continuous: 0
       zoom_absolute: 0
@@ -167,7 +167,7 @@ other_cameras:
   #   settings:
   #     focus_absolute: 20
   front:
-    port: /dev/video3
+    port: /dev/video2
     settings:
       # Front cam was the one observed auto-zooming during recording. Lock the
       # autofocus + zoom explicitly here (belt-and-suspenders with the shared

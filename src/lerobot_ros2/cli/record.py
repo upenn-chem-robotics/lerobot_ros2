@@ -69,6 +69,7 @@ from lerobot_ros2.helper import (
     ArmState,
     CameraReader,
     CameraStabilizer,
+    ManualFlip180,
     RobotHomeSender,
     ROSArmStateListener,
     WrapJointManager,
@@ -2071,6 +2072,28 @@ def main() -> None:
     time.sleep(0.3)
     logging.info(f"{len(cameras)} camera(s) active")
 
+    # The wrist cameras auto-rotate their own image when their gravity sensor
+    # decides they are upside down, and stay that way for the rest of the
+    # session. Number keys toggle a manual 180° correction so an inverted feed
+    # can be put back the right way up without replugging the camera. The
+    # recording thread and the preview each build their own CameraStabilizer,
+    # so both are given this one shared object: a toggle from the preview has
+    # to move the recorded frames too, or the operator would straighten the
+    # display while the dataset kept the inverted feed.
+    manual_flip = ManualFlip180(len(camera_configs))
+
+    def _toggle_camera_flip(slot: int) -> None:
+        new_state = manual_flip.toggle(slot)
+        if new_state is None:
+            return
+        cam = cameras[slot]
+        logging.warning(
+            "[%s] manual 180° flip %s — recorded frames are now %s",
+            cam.name or cam.display_label,
+            "ON" if new_state else "OFF",
+            "rotated" if new_state else "as-captured",
+        )
+
     arm_labels = arm_keys  # used for feature naming
 
     repo_id = f"ur_robotiq/{args.name}"
@@ -2550,7 +2573,9 @@ def main() -> None:
             command_executor.submit(source, f"subtask{delta:+d}", _action)
 
         # ── Recording thread ─────────────────────────────────────────────
-        record_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
+        record_stabilizer = CameraStabilizer(
+            stabilize_flags, orientation_thresholds, manual_flip=manual_flip
+        )
         rec_thread = threading.Thread(
             target=recording_loop,
             args=(
@@ -2594,13 +2619,21 @@ def main() -> None:
         if dataset is not None and args.visualize and cameras:
             cam_labels = [c.display_label for c in cameras]
             if use_keyboard:
-                win = "record.py — Q/ESC quit | S start/stop | D discard/reset | R reset | M cycle mode"
+                win = "record.py — Q/ESC quit | S start/stop | D discard/reset | R reset | M cycle mode | 1-9 flip cam 180°"
                 if subtask_mode:
                     win += " | N/B subtask"
             else:
                 win = "record.py — live preview — Q/ESC quit (record via pedal)"
 
-            viz_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
+            viz_stabilizer = CameraStabilizer(
+                stabilize_flags, orientation_thresholds, manual_flip=manual_flip
+            )
+
+            def _flip_annotated_labels() -> List[str]:
+                return [
+                    f"{label}  [FLIP180]" if manual_flip.is_flipped(i) else label
+                    for i, label in enumerate(cam_labels)
+                ]
 
             def _draw_record_overlay(canvas: np.ndarray, disp_w: int, disp_h: int) -> None:
                 countdown_label, countdown_remaining = recording_state.get_countdown()
@@ -2708,6 +2741,19 @@ def main() -> None:
                     cv2.putText(canvas, stab_text, (16, 34),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
 
+                flipped_names = [
+                    cameras[i].display_label or f"cam{i + 1}"
+                    for i, flipped in enumerate(manual_flip.flags())
+                    if flipped and i < len(cameras)
+                ]
+                if flipped_names:
+                    flip_text = "FLIP180: " + ", ".join(flipped_names)
+                    flip_y = 64 if stabilization_count else 34
+                    cv2.putText(canvas, flip_text, (16, flip_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
+                    cv2.putText(canvas, flip_text, (16, flip_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 160, 0), 2)
+
                 mode_text = (
                     f"MODE {GelloControlModeClient.mode_label(control_mode_client.mode)} "
                     f"({control_mode_client.mode})"
@@ -2739,6 +2785,7 @@ def main() -> None:
             ) as preview:
                 while not stop_event.is_set():
                     frames = viz_stabilizer.process([c.get_frame() for c in cameras])
+                    preview.set_labels(_flip_annotated_labels())
                     key = preview.render(frames, _draw_record_overlay)
 
                     if key in (ord('q'), ord('Q'), 27):
@@ -2756,6 +2803,8 @@ def main() -> None:
                             _submit_step_subtask("keyboard", 1)
                         elif subtask_mode and key in (ord('b'), ord('B')):
                             _submit_step_subtask("keyboard", -1)
+                        elif ord('1') <= key <= ord('9'):
+                            _toggle_camera_flip(key - ord('1'))
 
                 # A camera died: hold the big "CAM STUCK" banner on screen long
                 # enough for the teleoperator to read it before we exit + save.
@@ -2776,6 +2825,10 @@ def main() -> None:
             if subtask_mode:
                 keyboard_handlers["n"] = lambda: _submit_step_subtask("keyboard", 1)
                 keyboard_handlers["b"] = lambda: _submit_step_subtask("keyboard", -1)
+            for _slot in range(min(len(cameras), 9)):
+                keyboard_handlers[str(_slot + 1)] = (
+                    lambda slot=_slot: _toggle_camera_flip(slot)
+                )
             run_cbreak_keyboard_loop(stop_event, keyboard_handlers)
         elif dataset is not None:
             _active = []

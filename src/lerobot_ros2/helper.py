@@ -1680,6 +1680,60 @@ class WrapJointManager:
         return action
 
 
+class ManualFlip180:
+    """Operator-controlled 180° correction, shared between stabilizers.
+
+    The wrist cameras auto-rotate their own image when their gravity sensor
+    decides they are upside down, and the firmware exposes no control to lock
+    the orientation. Once a feed comes up inverted it stays inverted for the
+    rest of the session, so the operator flips it back here instead of
+    power-cycling the camera.
+
+    The flags live in one shared object because recording and preview each own
+    a separate :class:`CameraStabilizer`. A toggle made from the preview has to
+    move the recorded frames as well, otherwise the display would be corrected
+    while the dataset kept the inverted feed.
+    """
+
+    def __init__(
+        self,
+        num_cameras: int,
+        initial: Optional[Sequence[bool]] = None,
+    ) -> None:
+        if initial is None:
+            self._flags = [False] * num_cameras
+        else:
+            self._flags = [bool(v) for v in initial]
+            if len(self._flags) != num_cameras:
+                raise ValueError("initial must have one entry per camera")
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._flags)
+
+    def is_flipped(self, index: int) -> bool:
+        with self._lock:
+            if 0 <= index < len(self._flags):
+                return self._flags[index]
+            return False
+
+    def flags(self) -> List[bool]:
+        with self._lock:
+            return list(self._flags)
+
+    def any_flipped(self) -> bool:
+        with self._lock:
+            return any(self._flags)
+
+    def toggle(self, index: int) -> Optional[bool]:
+        """Flip camera ``index``; returns the new state, or ``None`` if out of range."""
+        with self._lock:
+            if not (0 <= index < len(self._flags)):
+                return None
+            self._flags[index] = not self._flags[index]
+            return self._flags[index]
+
+
 class CameraStabilizer:
     """Per-camera 180° orientation stabilization with a latched previous frame.
 
@@ -1687,18 +1741,24 @@ class CameraStabilizer:
     the recording loop and the deploy loop. ``process(frames)`` walks the list,
     applying ``orientation_stabilize_180_vs_prev`` only where the flag is on
     and returning a new list with the stabilized frames in place.
+
+    An optional shared :class:`ManualFlip180` is applied first, and applies
+    whether or not automatic stabilization is enabled for that camera.
     """
 
     def __init__(
         self,
         stabilize_flags: Sequence[bool],
         mae_thresholds: Sequence[float],
+        manual_flip: Optional[ManualFlip180] = None,
     ) -> None:
         self.stabilize_flags: List[bool] = [bool(f) for f in stabilize_flags]
         self.mae_thresholds: List[float] = [float(t) for t in mae_thresholds]
         if len(self.mae_thresholds) != len(self.stabilize_flags):
             raise ValueError("stabilize_flags and mae_thresholds must be the same length")
+        self.manual_flip = manual_flip
         self._prev: List[Optional[np.ndarray]] = [None] * len(self.stabilize_flags)
+        self._applied_flip: List[bool] = [False] * len(self.stabilize_flags)
 
     @property
     def num_cameras(self) -> int:
@@ -1714,7 +1774,22 @@ class CameraStabilizer:
     def process(self, frames: List[Optional[np.ndarray]]) -> List[Optional[np.ndarray]]:
         out: List[Optional[np.ndarray]] = []
         for i, frame in enumerate(frames):
-            if i >= len(self.stabilize_flags) or not self.stabilize_flags[i] or frame is None:
+            if i >= len(self.stabilize_flags) or frame is None:
+                out.append(frame)
+                continue
+
+            flip = self.manual_flip.is_flipped(i) if self.manual_flip is not None else False
+            if flip != self._applied_flip[i]:
+                # The operator just toggled this camera. Rotate the latched
+                # reference to match, otherwise the comparison below would see
+                # a 180° mismatch and immediately undo the toggle.
+                if self._prev[i] is not None:
+                    self._prev[i] = cv2.rotate(self._prev[i], cv2.ROTATE_180)
+                self._applied_flip[i] = flip
+            if flip:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+
+            if not self.stabilize_flags[i]:
                 out.append(frame)
                 continue
             stabilized, self._prev[i] = orientation_stabilize_180_vs_prev(

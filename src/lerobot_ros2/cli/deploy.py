@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
@@ -48,6 +48,7 @@ os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok
 from lerobot_ros2.config_paths import resolve_config_path
 from lerobot_ros2.helper import (
     CameraStabilizer,
+    ManualFlip180,
     ROSJointReader,
     RobotHomeSender,
     WrapJointManager,
@@ -795,7 +796,14 @@ def main() -> None:
         float(configs_by_name[c.name].orientation_mae_delta_threshold) if c.name in configs_by_name else 20.0
         for c in cameras
     ]
-    stabilizer = CameraStabilizer(stabilize_flags, orientation_mae_thresholds)
+    # The wrist cameras auto-rotate their own image when their gravity sensor
+    # decides they are upside down, and stay that way for the rest of the
+    # session. Number keys toggle a manual 180° correction so the operator can
+    # match the orientation the policy was trained on without replugging.
+    manual_flip = ManualFlip180(len(cameras))
+    stabilizer = CameraStabilizer(
+        stabilize_flags, orientation_mae_thresholds, manual_flip=manual_flip
+    )
     for cam, flag, thr in zip(cameras, stabilize_flags, orientation_mae_thresholds):
         if flag:
             logging.info(
@@ -1346,13 +1354,6 @@ def main() -> None:
         else:
             _start_new_episode()
 
-    if terminal_keyboard_enabled:
-        threading.Thread(
-            target=run_cbreak_keyboard_loop,
-            args=(stop_event, {" ": _toggle_policy}),
-            daemon=True,
-        ).start()
-
     def _record_frames(frames: List[Optional[np.ndarray]]) -> None:
         nonlocal grid_frame_count
         # Only record while a rollout is actively running. Previously the
@@ -1404,20 +1405,56 @@ def main() -> None:
         cv2.putText(canvas, status, (disp_w - 350, disp_h - 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 180, 0), 2)
 
+    def _flip_annotated_labels() -> List[str]:
+        return [
+            f"{label}  [FLIP180]" if manual_flip.is_flipped(i) else label
+            for i, label in enumerate(cam_labels)
+        ]
+
+    def _toggle_camera_flip(slot: int) -> None:
+        new_state = manual_flip.toggle(slot)
+        if new_state is None:
+            return
+        cam = cameras[slot]
+        logging.warning(
+            "[%s] manual 180° flip %s — frames fed to the policy are now %s",
+            cam.name or f"cam{cam.index}",
+            "ON" if new_state else "OFF",
+            "rotated" if new_state else "as-captured",
+        )
+        if preview is not None:
+            preview.set_labels(_flip_annotated_labels())
+
     def _handle_preview_key(key: int) -> bool:
         if key in (ord('q'), ord('Q'), 27):
             stop_event.set()
             return True
         if key == ord(' '):
             _toggle_policy()
+        elif ord('1') <= key <= ord('9'):
+            _toggle_camera_flip(key - ord('1'))
         return False
+
+    # Started here rather than next to `terminal_keyboard_enabled` so the
+    # handlers it dispatches to are already defined when the thread starts.
+    if terminal_keyboard_enabled:
+        terminal_handlers: Dict[str, Callable[[], None]] = {" ": _toggle_policy}
+        for _slot in range(min(len(cameras), 9)):
+            terminal_handlers[str(_slot + 1)] = (
+                lambda slot=_slot: _toggle_camera_flip(slot)
+            )
+        threading.Thread(
+            target=run_cbreak_keyboard_loop,
+            args=(stop_event, terminal_handlers),
+            daemon=True,
+        ).start()
 
     try:
         with contextlib.ExitStack() as stack:
             if cameras and args.visualize:
                 preview = stack.enter_context(
                     LivePreview(
-                        window_name="deploy.py — SPACE=start/stop, Q=quit",
+                        window_name="deploy.py — SPACE=start/stop, 1-9=flip cam 180°, Q=quit",
                         cam_labels=cam_labels,
                         fullscreen=True,
                         wait_key_ms=1,

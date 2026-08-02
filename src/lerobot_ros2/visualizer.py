@@ -171,6 +171,10 @@ class LivePreview:
             logging.warning(msg, *args)
         self._available = False
 
+    def set_labels(self, cam_labels: Sequence[str]) -> None:
+        """Replace the per-tile labels, e.g. to annotate a camera's live state."""
+        self._cam_labels = list(cam_labels)
+
     def render(
         self,
         frames: Sequence[Optional[np.ndarray]],
