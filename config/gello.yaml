@@ -26,7 +26,7 @@ services:
 # name is matched against each control_mode service path above, so "left"
 # selects "/left_gello_offset_node/set_parameters". Set to null (or remove this
 # key) to rotate every arm together — the legacy behaviour.
-rotation_arm: left
+rotation_arm: right
 
 # Which arm follows Gello during each subtask of a long-horizon episode, in
 # order (index 0 is the first subtask). Only consulted when record.py runs with
@@ -46,12 +46,12 @@ rotation_arm: left
 # The list length is the default for `--subtask-count`. Remove the key (or pass
 # an empty list) to keep every arm following Gello for the whole episode.
 subtask_arms:
-  - {arm: left,  name: stir bar}
+  - {arm: left,  name: sep funnel}
   - {arm: left,  name: funnel on}
-  - {arm: right, name: solid}
-  - {arm: right, name: liquid}
+  - {arm: right, name: liquid1}
+  - {arm: right, name: liquid2}
   - {arm: right, name: funnel off}
-  - {arm: right, name: septum}
+  - {arm: right, name: septum on}
 
 use_reset_client: false
 
