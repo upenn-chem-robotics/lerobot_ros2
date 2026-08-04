@@ -50,6 +50,12 @@ Examples::
         --dst data/smrithi/salt_20260725/reoriented \
         --camera left_wrist_top --episodes 3,7,10-14
 
+    # the wrist cameras are separate devices and flip independently, so each
+    # one can carry its own episode list
+    lerobot-ros-reorient --src <in> --dst <out> \
+        --camera left_wrist_top:0,4,7,15-16 \
+        --camera right_wrist_top:9,18-19
+
     # a whole session that was inverted end to end
     lerobot-ros-reorient --src <in> --dst <out> \
         --camera left_wrist_top --episodes all
@@ -173,19 +179,62 @@ def load_dataset_meta(root: Path) -> DatasetMeta:
     )
 
 
+def _validated_camera(meta: DatasetMeta, name: str) -> str:
+    short = camera_short_name(name.strip())
+    if short not in meta.camera_keys:
+        raise SystemExit(
+            f"--camera {name!r} is not a camera in this dataset. "
+            f"Available: {sorted(meta.camera_keys)}"
+        )
+    return short
+
+
 def resolve_cameras(meta: DatasetMeta, requested: Sequence[str]) -> List[str]:
-    """Validate ``--camera`` names against the dataset, preserving the given order."""
+    """Validate ``--camera`` names against the dataset, preserving the given order.
+
+    Tolerates the ``NAME:EPISODES`` form so the same arguments can be handed to
+    ``--report`` and to a rewrite without editing them.
+    """
     resolved: List[str] = []
-    for name in requested:
-        short = camera_short_name(name.strip())
-        if short not in meta.camera_keys:
-            raise SystemExit(
-                f"--camera {name!r} is not a camera in this dataset. "
-                f"Available: {sorted(meta.camera_keys)}"
-            )
+    for entry in requested:
+        short = _validated_camera(meta, entry.partition(":")[0])
         if short not in resolved:
             resolved.append(short)
     return resolved
+
+
+def resolve_camera_selections(
+    meta: DatasetMeta,
+    requested: Sequence[str],
+    default_spec: Optional[str],
+) -> Dict[str, List[int]]:
+    """Map each ``--camera`` entry to the episodes that should be rotated for it.
+
+    ``--camera NAME`` takes the shared ``--episodes`` list, while ``--camera
+    NAME:SPEC`` overrides it for that camera alone. The two wrist cameras flip
+    independently -- they are separate devices making separate decisions about
+    which way up they are -- so a session routinely needs a different episode
+    list for each, and forcing one shared list would mean rotating episodes on
+    a camera that was fine.
+    """
+    selections: Dict[str, List[int]] = {}
+    for entry in requested:
+        name, separator, spec = entry.partition(":")
+        spec = spec.strip() if separator else ""
+        short = _validated_camera(meta, name)
+        if not spec:
+            if not default_spec:
+                raise SystemExit(
+                    f"--camera {entry!r} has no episodes to rotate. Either pass "
+                    f"--episodes to cover every camera, or attach a list to this one: "
+                    f"--camera {short}:3,7,10-14"
+                )
+            spec = default_spec
+        episodes = parse_episode_spec(spec, meta.episode_ids)
+        if short in selections:
+            episodes = sorted(set(selections[short]) | set(episodes))
+        selections[short] = episodes
+    return selections
 
 
 def parse_episode_spec(spec: str, valid_ids: Sequence[int]) -> List[int]:
@@ -592,10 +641,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Source dataset root (read-only; must contain meta/info.json).")
     parser.add_argument("--dst", type=Path, default=None,
                         help="Destination dataset root. Required unless --report.")
-    parser.add_argument("--camera", action="append", default=[], metavar="NAME",
-                        help="Camera to rotate, e.g. left_wrist_top. Repeatable.")
+    parser.add_argument("--camera", action="append", default=[], metavar="NAME[:EPISODES]",
+                        help="Camera to rotate, e.g. left_wrist_top. Repeatable. Attach a "
+                             "per-camera episode list with a colon (left_wrist_top:3,7,10-14) "
+                             "when the cameras flipped on different episodes; without one the "
+                             "camera uses --episodes.")
     parser.add_argument("--episodes", type=str, default=None,
-                        help="'all', or a comma list with ranges such as 3,7,10-14.")
+                        help="Shared episode list for cameras that do not carry their own: "
+                             "'all', or a comma list with ranges such as 3,7,10-14.")
     parser.add_argument("--report", action="store_true",
                         help="Read-only: write first-frame contact sheets and print the "
                              "advisory boundary table. Makes no dataset changes.")
@@ -637,8 +690,8 @@ def run_report(meta: DatasetMeta, args: argparse.Namespace) -> int:
 
     print(
         "\nLook at the contact sheets, note the upside-down episodes, then run:\n"
-        f"  lerobot-ros-reorient --src {meta.root} --dst <out> "
-        "--camera <name> --episodes <list>"
+        f"  lerobot-ros-reorient --src {meta.root} --dst <out> \\\n"
+        "      --camera <name>:<episodes> [--camera <other>:<episodes>]"
     )
     return 0
 
@@ -646,32 +699,41 @@ def run_report(meta: DatasetMeta, args: argparse.Namespace) -> int:
 def run_rewrite(meta: DatasetMeta, args: argparse.Namespace) -> int:
     if not args.camera:
         raise SystemExit("--camera is required when rewriting (or use --report).")
-    if not args.episodes:
-        raise SystemExit("--episodes is required when rewriting (or use --report).")
     if args.src.resolve() == args.dst.resolve():
         raise SystemExit("--src and --dst must be different paths")
 
-    cameras = resolve_cameras(meta, args.camera)
-    episodes = parse_episode_spec(args.episodes, meta.episode_ids)
+    selections = resolve_camera_selections(meta, args.camera, args.episodes)
 
     # Work out every file that needs rewriting before touching the destination,
-    # so a bad selection fails before anything has been written.
+    # so a bad selection fails before anything has been written. Missing videos
+    # are caught here too: discovering one halfway through a long re-encode
+    # would leave a half-built dataset behind.
     plan: Dict[str, Dict[Tuple[int, int], List[FrameRange]]] = {}
-    for camera in cameras:
+    missing: List[str] = []
+    for camera, episodes in selections.items():
         ranges = episode_frame_ranges(meta, meta.camera_keys[camera], episodes)
         plan[camera] = group_by_file(ranges)
+        for chunk, file_index in plan[camera]:
+            path = video_file_path(meta, meta.camera_keys[camera], chunk, file_index)
+            if not path.is_file():
+                missing.append(f"{camera}: {path.relative_to(meta.root)}")
+    if missing:
+        raise SystemExit(
+            "Episode metadata references video files that do not exist:\n  "
+            + "\n  ".join(missing)
+        )
 
     print(f"Reorienting {meta.root} -> {args.dst}")
-    print(f"  cameras: {cameras}")
-    print(f"  episodes ({len(episodes)}): {_summarize_ids(episodes)}")
     total_files = 0
     for camera, grouped in plan.items():
         key = meta.camera_keys[camera]
+        episodes = selections[camera]
         all_mp4s = sorted((meta.root / "videos" / key).rglob("*.mp4"))
-        print(f"  [{camera}] {len(grouped)} of {len(all_mp4s)} video file(s) re-encoded")
+        print(f"  [{camera}] {len(episodes)} episode(s): {_summarize_ids(episodes)}")
+        print(f"    {len(grouped)} of {len(all_mp4s)} video file(s) re-encoded")
         for (chunk, file_index), items in sorted(grouped.items()):
             spans = ", ".join(f"ep{r.episode}:[{r.start},{r.end})" for r in items)
-            print(f"    chunk-{chunk:03d}/file-{file_index:03d}: {spans}")
+            print(f"      chunk-{chunk:03d}/file-{file_index:03d}: {spans}")
             total_files += 1
 
     if args.dry_run:
@@ -704,15 +766,13 @@ def run_rewrite(meta: DatasetMeta, args: argparse.Namespace) -> int:
             print(f"  [ffmpeg] rotate {mp4.relative_to(meta.root)}")
             rotate_video_file(mp4, out, items, args.crf, args.preset)
 
-    rotations = {camera: episodes for camera in cameras}
-    update_info_json(args.dst, rotations, meta.camera_keys)
+    update_info_json(args.dst, selections, meta.camera_keys)
     write_manifest(
         args.dst,
         {
             "source": str(meta.root),
             "rotation_degrees": 180,
-            "cameras": cameras,
-            "episodes": episodes,
+            "rotations": {camera: eps for camera, eps in selections.items()},
             "encoder": {"codec": "libx264", "crf": int(args.crf), "preset": args.preset},
         },
     )

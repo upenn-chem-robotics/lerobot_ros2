@@ -234,6 +234,12 @@ class FrameRangeTest(unittest.TestCase):
         meta = self._meta([(0, 0.0, 10.0, 100, 0)])
         with self.assertRaises(SystemExit):
             reorient.resolve_cameras(meta, ["nope"])
+        with self.assertRaises(SystemExit):
+            reorient.resolve_camera_selections(meta, ["nope:0"], None)
+
+    def test_resolve_cameras_tolerates_inline_episode_list(self):
+        meta = self._meta([(0, 0.0, 10.0, 100, 0)])
+        self.assertEqual(reorient.resolve_cameras(meta, ["wrist:0"]), ["wrist"])
 
     def test_camera_short_name_handles_both_key_styles(self):
         self.assertEqual(
@@ -247,14 +253,15 @@ class FrameRangeTest(unittest.TestCase):
         self.assertEqual(reorient.camera_short_name("left_wrist_top"), "left_wrist_top")
 
 
-def _build_dataset_meta_only(root: Path, spans) -> None:
+def _build_dataset_meta_only(root: Path, spans, cameras=("camera_00_wrist",)) -> None:
     """Metadata-only dataset (no videos), for the pure range/selection tests."""
     features = {
-        "observation.images.camera_00_wrist": {
+        f"observation.images.{cam}": {
             "dtype": "video",
             "shape": [HEIGHT, WIDTH, 3],
             "info": {"video.codec": "av1"},
         }
+        for cam in cameras
     }
     info = {
         "codebase_version": "v3.0",
@@ -266,18 +273,59 @@ def _build_dataset_meta_only(root: Path, spans) -> None:
     (root / "meta" / "info.json").write_text(json.dumps(info))
     rows = []
     for episode, start, end, length, file_index in spans:
-        key = "videos/observation.images.camera_00_wrist"
-        rows.append({
-            "episode_index": episode,
-            "length": length,
-            f"{key}/chunk_index": 0,
-            f"{key}/file_index": file_index,
-            f"{key}/from_timestamp": start,
-            f"{key}/to_timestamp": end,
-        })
+        row = {"episode_index": episode, "length": length}
+        for cam in cameras:
+            key = f"videos/observation.images.{cam}"
+            row[f"{key}/chunk_index"] = 0
+            row[f"{key}/file_index"] = file_index
+            row[f"{key}/from_timestamp"] = start
+            row[f"{key}/to_timestamp"] = end
+        rows.append(row)
     ep_dir = root / "meta" / "episodes" / "chunk-000"
     ep_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(ep_dir / "file-000.parquet")
+
+
+class CameraSelectionTest(unittest.TestCase):
+    """Per-camera episode lists: the two wrist cameras flip independently."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        root = self.tmp / "ds"
+        spans = [(e, e * 1.0, (e + 1) * 1.0, 10, 0) for e in range(20)]
+        _build_dataset_meta_only(root, spans, cameras=("camera_00_left", "camera_01_right"))
+        self.meta = reorient.load_dataset_meta(root)
+
+    def test_each_camera_keeps_its_own_list(self):
+        got = reorient.resolve_camera_selections(
+            self.meta, ["left:0,4,7", "right:9,18-19"], None
+        )
+        self.assertEqual(got, {"left": [0, 4, 7], "right": [9, 18, 19]})
+
+    def test_bare_camera_falls_back_to_shared_episodes(self):
+        got = reorient.resolve_camera_selections(self.meta, ["left", "right:9"], "1,2")
+        self.assertEqual(got, {"left": [1, 2], "right": [9]})
+
+    def test_inline_list_overrides_shared_episodes(self):
+        got = reorient.resolve_camera_selections(self.meta, ["left:5"], "1,2")
+        self.assertEqual(got, {"left": [5]})
+
+    def test_bare_camera_without_shared_episodes_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            reorient.resolve_camera_selections(self.meta, ["left"], None)
+
+    def test_repeated_camera_merges_lists(self):
+        got = reorient.resolve_camera_selections(self.meta, ["left:1,2", "left:2,5"], None)
+        self.assertEqual(got, {"left": [1, 2, 5]})
+
+    def test_inline_list_is_validated(self):
+        with self.assertRaises(SystemExit):
+            reorient.resolve_camera_selections(self.meta, ["left:99"], None)
+
+    def test_inline_all_is_accepted(self):
+        got = reorient.resolve_camera_selections(self.meta, ["left:all"], None)
+        self.assertEqual(got["left"], list(range(20)))
 
 
 class RotateRoundTripTest(unittest.TestCase):
@@ -349,14 +397,69 @@ class RotateRoundTripTest(unittest.TestCase):
 
         manifest = json.loads((self.dst / "reorient_manifest.json").read_text())
         self.assertEqual(manifest["rotation_degrees"], 180)
-        self.assertEqual(manifest["cameras"], ["wrist"])
-        self.assertEqual(manifest["episodes"], [1])
+        self.assertEqual(manifest["rotations"], {"wrist": [1]})
 
     def test_data_and_sidecars_are_copied(self):
         self.assertTrue((self.dst / "data" / "chunk-000" / "file-000.parquet").is_file())
         self.assertTrue((self.dst / "recording_config.yaml").is_file())
         self.assertTrue((self.dst / "meta" / "episodes" / "chunk-000"
                          / "file-000.parquet").is_file())
+
+
+class PerCameraRotateTest(unittest.TestCase):
+    """One run, two cameras, different episodes rotated on each."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.src = cls.tmp / "src"
+        _build_dataset(cls.src, [
+            (0, 0.0, 1.0, 10, 0),
+            (1, 1.0, 2.0, 10, 0),
+            (2, 2.0, 3.0, 10, 0),
+        ])
+        cls.dst = cls.tmp / "dst"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = reorient.main([
+                "--src", str(cls.src), "--dst", str(cls.dst),
+                "--camera", "wrist:1",
+                "--camera", "other:0,2",
+            ])
+        assert rc == 0, "reorient returned nonzero"
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _video(self, cam: str) -> Path:
+        return (self.dst / "videos" / f"observation.images.{cam}" / "chunk-000"
+                / "file-000.mp4")
+
+    def test_first_camera_rotates_only_its_own_episodes(self):
+        got = _orientations(self._video("camera_00_wrist"))
+        self.assertEqual(got[:10], ["UP"] * 10)
+        self.assertEqual(got[10:20], ["DOWN"] * 10)
+        self.assertEqual(got[20:], ["UP"] * 10)
+
+    def test_second_camera_rotates_a_different_set(self):
+        got = _orientations(self._video("camera_01_other"))
+        self.assertEqual(got[:10], ["DOWN"] * 10)
+        self.assertEqual(got[10:20], ["UP"] * 10)
+        self.assertEqual(got[20:], ["DOWN"] * 10)
+
+    def test_provenance_records_each_camera_separately(self):
+        info = json.loads((self.dst / "meta" / "info.json").read_text())
+        features = info["features"]
+        self.assertEqual(
+            features["observation.images.camera_00_wrist"]["info"]["reorient_180_episodes"],
+            [1],
+        )
+        self.assertEqual(
+            features["observation.images.camera_01_other"]["info"]["reorient_180_episodes"],
+            [0, 2],
+        )
+        manifest = json.loads((self.dst / "reorient_manifest.json").read_text())
+        self.assertEqual(manifest["rotations"], {"wrist": [1], "other": [0, 2]})
 
 
 class GuardrailTest(unittest.TestCase):
@@ -389,10 +492,22 @@ class GuardrailTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             reorient.main(["--src", str(self.src), "--camera", "wrist", "--episodes", "0"])
 
+    def test_missing_video_file_is_caught_before_writing(self):
+        # _build_dataset_meta_only writes metadata but no videos, so planning
+        # must refuse rather than start a re-encode it cannot finish.
+        out = self.tmp / "out"
+        with self.assertRaises(SystemExit) as caught:
+            reorient.main(["--src", str(self.src), "--dst", str(out),
+                           "--camera", "wrist:0"])
+        self.assertIn("do not exist", str(caught.exception))
+        self.assertFalse(out.exists())
+
     def test_dry_run_writes_nothing(self):
+        full = self.tmp / "full"
+        _build_dataset(full, [(0, 0.0, 1.0, 10, 0), (1, 1.0, 2.0, 10, 0)])
         out = self.tmp / "out"
         with contextlib.redirect_stdout(io.StringIO()) as buf:
-            rc = reorient.main(["--src", str(self.src), "--dst", str(out),
+            rc = reorient.main(["--src", str(full), "--dst", str(out),
                                "--camera", "wrist", "--episodes", "0", "--dry-run"])
         self.assertEqual(rc, 0)
         self.assertFalse(out.exists(), "dry run must not create the destination")
