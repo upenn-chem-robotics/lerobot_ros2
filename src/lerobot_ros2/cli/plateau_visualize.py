@@ -55,10 +55,11 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from lerobot_ros2.plateau import (
-    PlateauParams,
     PlateauResult,
+    add_plateau_args,
     detect_plateaus,
     load_action_min_max_from_stats,
+    params_from_args,
 )
 from lerobot_ros2.video_exporter import _open_video_writer
 
@@ -562,12 +563,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Output mp4 path (required when --episode is set).")
     p.add_argument("--output-dir", type=Path, default=None,
                    help="Output directory (required when --episodes or --all-episodes is set).")
-    p.add_argument("--tau", type=float, default=0.005)
-    p.add_argument("--min-run", type=int, default=5)
-    p.add_argument("--margin", type=int, default=2)
-    p.add_argument("--norm", choices=("linf", "l2"), default="linf")
-    p.add_argument("--joints", type=str, default=None,
-                   help="Optional comma-separated joint indices to consider.")
+    add_plateau_args(p)
     p.add_argument("--upscale", type=int, default=2,
                    help="Nearest-neighbour upscale of the output video (default: 2).")
     p.add_argument("--drop-plateau", action="store_true",
@@ -627,14 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     a_min, a_max = load_action_min_max_from_stats(src / "meta" / "stats.json")
     action, ep_idx, existing_as = _load_action_episode_existing_as(src)
 
-    joints = None
-    if args.joints:
-        joints = tuple(int(x) for x in args.joints.split(","))
-
-    params = PlateauParams(
-        tau=float(args.tau), min_run=int(args.min_run), margin=int(args.margin),
-        norm=args.norm, joint_indices=joints,
-    )
+    params = params_from_args(args)
     logging.info(
         "Running plateau detection: tau=%s min_run=%s margin=%s norm=%s joints=%s",
         params.tau, params.min_run, params.margin, params.norm, params.joint_indices,

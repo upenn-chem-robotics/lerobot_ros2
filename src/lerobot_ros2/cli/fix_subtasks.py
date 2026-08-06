@@ -49,9 +49,10 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
-
 from lerobot.datasets.compute_stats import get_feature_stats
 from lerobot.datasets.io_utils import write_stats
+
+from lerobot_ros2.dataset_rewrite import episode_parquets, read_info
 
 COLUMN = "subtask_index"
 _STAT_NAMES = ("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99")
@@ -205,10 +206,7 @@ def seconds_to_frames(values: Sequence[float], fps: float) -> List[int]:
 
 def load_layout(root: Path) -> DatasetLayout:
     """Read the metadata needed to locate and interpret each episode's frames."""
-    info_path = root / "meta" / "info.json"
-    if not info_path.is_file():
-        raise SystemExit(f"{root} is not a LeRobot dataset (no meta/info.json)")
-    info = json.loads(info_path.read_text())
+    info = read_info(root)
 
     if COLUMN not in (info.get("features") or {}):
         raise SystemExit(
@@ -225,7 +223,7 @@ def load_layout(root: Path) -> DatasetLayout:
         "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
     )
 
-    episodes_meta_paths = sorted((root / "meta" / "episodes").rglob("*.parquet"))
+    episodes_meta_paths = episode_parquets(root)
     if not episodes_meta_paths:
         raise SystemExit(f"{root}: no meta/episodes/**.parquet found")
 

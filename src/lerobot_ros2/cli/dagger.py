@@ -56,10 +56,9 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
-from typing import Callable, Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
@@ -71,35 +70,6 @@ from PIL import Image
 from torchvision.transforms import v2 as transforms_v2
 
 os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
-
-from lerobot_ros2.config_paths import resolve_config_path
-from lerobot_ros2.hub_sync import try_sync_to_hub
-from lerobot_ros2.helper import (
-    EVDEV_AVAILABLE,
-    ArmState,
-    CameraReader,
-    CameraStabilizer,
-    _slugify_camera_name,
-    FootPedalThread,
-    PEDAL_DEFAULT_DEVICE,
-    RobotHomeSender,
-    ROSArmStateListener,
-    WrapJointManager,
-    build_recording_snapshot,
-    load_arm_configs,
-    load_camera_configs,
-    load_config,
-    load_experiment_home_config,
-    open_configured_cameras,
-    read_camera_overrides,
-    resolve_home,
-    resolve_pedal_evdev_paths,
-    resolve_unwrap_config,
-    resolve_wrap_joints,
-    run_cbreak_keyboard_loop,
-    save_experiment_home_config,
-)
-from lerobot_ros2.visualizer import LivePreview
 
 # Reuse the GELLO control helpers and shared recording scaffolding from
 # record.py: they already implement exactly the handover surface we need
@@ -118,28 +88,55 @@ from lerobot_ros2.cli.record import (
     resolve_reset_services,
     resolve_transition_ready_services,
 )
+from lerobot_ros2.config_paths import resolve_config_path
+from lerobot_ros2.helper import (
+    EVDEV_AVAILABLE,
+    PEDAL_DEFAULT_DEVICE,
+    ArmState,
+    CameraReader,
+    CameraStabilizer,
+    FootPedalThread,
+    RobotHomeSender,
+    ROSArmStateListener,
+    WrapJointManager,
+    _slugify_camera_name,
+    build_recording_snapshot,
+    load_arm_configs,
+    load_camera_configs,
+    load_config,
+    load_experiment_home_config,
+    open_configured_cameras,
+    read_camera_overrides,
+    resolve_home,
+    resolve_unwrap_config,
+    resolve_wrap_joints,
+    run_cbreak_keyboard_loop,
+    save_experiment_home_config,
+)
+from lerobot_ros2.hub_sync import try_sync_to_hub
 
-# Reuse the policy-loader plumbing from deploy.py so ACT / (strided_)diffusion
-# checkpoints load the same way and ``StridedHistoryRunner`` is driven
-# identically to the standalone deployer.
-from lerobot_ros2.cli.deploy import (
+# Policy loading, crop recovery and the strided runner are shared with
+# ``deploy`` so both commands drive a checkpoint identically.
+from lerobot_ros2.policy_runtime import (
     ROSActionPublisher,
-    _image_feature_keys,
-    _load_policy_type,
-    _policy_visual_size,
-    _resolve_arm_keys,
+    build_strided_runner,
     detect_fullres_crops,
     detect_per_camera_crops,
     detect_training_resize,
+    get_image_feature_keys,
+    get_policy_visual_size,
+    load_policy,
     parse_fullres_crop_args,
+    resolve_arm_keys,
+    resolve_device,
     resolve_experiment_config_path,
     resolve_recording_config_path,
 )
 from lerobot_ros2.preprocessing import apply_fullres_crop, apply_per_camera_crop
+from lerobot_ros2.visualizer import LivePreview
 
 try:
     import rclpy
-    from rclpy.node import Node
     from sensor_msgs.msg import JointState as JointStateMsg
     from std_srvs.srv import Trigger as TriggerSrv
     ROS_AVAILABLE = True
@@ -152,26 +149,7 @@ try:
 except ImportError:
     LEROBOT_AVAILABLE = False
 
-from lerobot.policies.act.modeling_act import ACTPolicy
-from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.policies.factory import make_pre_post_processors
-
-from lerobot_ros2.strided_history import StridedHistoryRunner, load_strided_config
-
-# Importing the plugin registers ``action_history_diffusion`` as a known policy
-# type so checkpoints saved with that ``type`` field can be loaded below. The
-# import is wrapped in try/except so dagger.py still works in environments
-# where the plugin isn't installed (those just can't load action-history
-# checkpoints, but stock diffusion / ACT keep working). Mirrors deploy.py.
-try:
-    from lerobot_policy_action_history_diffusion import (
-        ActionHistoryDiffusionPolicy,
-    )
-    _ACTION_HISTORY_AVAILABLE = True
-except ImportError:
-    ActionHistoryDiffusionPolicy = None  # type: ignore[assignment]
-    _ACTION_HISTORY_AVAILABLE = False
-
 
 # ── Phase state ───────────────────────────────────────────────────────────
 
@@ -684,68 +662,14 @@ def main() -> None:
         orientation_thresholds = [float(args.orientation_mae_delta_threshold)] * len(camera_configs)
 
     # ── Device / torch ──────────────────────────────────────────────────
-    device = args.device
-    if device == "cuda" and not torch.cuda.is_available():
-        device = "cpu"
-        logging.warning("CUDA not available, falling back to CPU")
+    device = resolve_device(args.device)
 
-    # ── Load policy (mirrors deploy.py) ─────────────────────────────────
+    # ── Load policy (shared with deploy) ─────────────────────────────────
     logging.info("Loading policy from %s...", args.policy)
-    policy_type = _load_policy_type(args.policy, args.deploy_mode)
-    if policy_type == "action_history_diffusion":
-        if not _ACTION_HISTORY_AVAILABLE:
-            raise RuntimeError(
-                "Checkpoint declares type=action_history_diffusion but the "
-                "lerobot_policy_action_history_diffusion plugin is not installed "
-                "in this environment. Install it with "
-                "`pip install -e packages/lerobot_policy_action_history_diffusion`."
-            )
-        policy = ActionHistoryDiffusionPolicy.from_pretrained(args.policy)
-    elif policy_type == "diffusion":
-        policy = DiffusionPolicy.from_pretrained(args.policy)
-    else:
-        policy = ACTPolicy.from_pretrained(args.policy)
-    policy.config.device = device
-    policy.to(device)
-    policy.eval()
-    # Both DiffusionPolicy and its action_history subclass need their queues
-    # primed via reset() before the first select_action() call.
-    if policy_type in ("diffusion", "action_history_diffusion") and hasattr(policy, "reset"):
-        policy.reset()
-
-    strided_cfg = None
-    strided_runner: Optional[StridedHistoryRunner] = None
-    # action_history_diffusion has its own past-action queue layer inside the
-    # policy, so it does NOT use StridedHistoryRunner -- the two extensions are
-    # independent. Mirrors deploy.py.
-    if policy_type == "diffusion":
-        strided_cfg = load_strided_config(args.policy)
-        if strided_cfg is not None:
-            if strided_cfg.n_obs_steps != policy.config.n_obs_steps:
-                logging.warning(
-                    "strided_history.json says n_obs_steps=%d but the policy "
-                    "config reports %d; trusting the policy config.",
-                    strided_cfg.n_obs_steps,
-                    policy.config.n_obs_steps,
-                )
-                strided_cfg.n_obs_steps = int(policy.config.n_obs_steps)
-            strided_runner = StridedHistoryRunner(
-                policy,
-                fps=int(strided_cfg.fps),
-                stride_seconds=float(strided_cfg.stride_seconds),
-            )
-            expected_hz = int(strided_cfg.fps)
-            if int(round(args.hz)) != expected_hz:
-                logging.warning(
-                    "Strided history expects %d Hz inference; you requested --hz %.2f.",
-                    expected_hz, args.hz,
-                )
-            logging.info(
-                "Strided history enabled: n_obs_steps=%d, stride=%.2fs, buffer_length=%d frames",
-                strided_runner.n_obs,
-                strided_runner.stride_seconds,
-                strided_runner.buffer_length,
-            )
+    policy, policy_type = load_policy(args.policy, args.deploy_mode, device)
+    strided_cfg, strided_runner = build_strided_runner(
+        policy, policy_type, args.policy, args.hz
+    )
     logging.info("Policy loaded: %s on %s", policy.config.type, device)
 
     preprocessor, postprocessor = make_pre_post_processors(
@@ -753,9 +677,9 @@ def main() -> None:
         pretrained_path=args.policy,
     )
 
-    image_feature_keys = _image_feature_keys(policy)
+    image_feature_keys = get_image_feature_keys(policy)
     expected_state_dim = policy.config.robot_state_feature.shape[0] if policy.config.robot_state_feature is not None else None
-    policy_visual_size = _policy_visual_size(policy)
+    policy_visual_size = get_policy_visual_size(policy)
 
     training_resize = detect_training_resize(args.policy)
     resize_transform = None
@@ -818,7 +742,6 @@ def main() -> None:
         {k: cameras[camera_index_by_feature_key[k]].name for k in image_feature_keys},
     )
 
-    configs_by_name = {c.name: c for c in camera_configs}
     # Main-loop camera stabilizer is shared with recording so flipping stays
     # consistent across the policy/teleop boundary within an episode.
     main_stabilizer = CameraStabilizer(stabilize_flags, orientation_thresholds)
@@ -926,7 +849,7 @@ def main() -> None:
 
     logging.info("Waiting for action and state topics...")
     while not stop_event.is_set():
-        if all(l.is_ready for l in listeners.values()):
+        if all(listener.is_ready for listener in listeners.values()):
             break
         time.sleep(0.1)
 
@@ -956,7 +879,7 @@ def main() -> None:
     )
 
     # Filter arm_keys down to those the policy actually expects (matches deploy.py).
-    arm_keys = _resolve_arm_keys(arm_configs, home_joint_names, policy)
+    arm_keys = resolve_arm_keys(arm_configs, home_joint_names, policy)
     if not arm_keys:
         sys.exit("Could not resolve active arms for policy.")
     if set(arm_keys) != set(arm_keys_req):
@@ -1437,7 +1360,6 @@ def main() -> None:
                 logging.info("[%s] capture RESUMED after mode cycle", source)
 
     # Optional service so external scripts can force a reset (matches record.py).
-    reset_return_service = None
     if use_reset_client:
 
         def _handle_reset_return(request: object, response: object):
@@ -1446,7 +1368,8 @@ def main() -> None:
             response.message = "reset scheduled"
             return response
 
-        reset_return_service = node.create_service(TriggerSrv, "/reset_return", _handle_reset_return)
+        # The node owns the returned handle, so it does not need binding here.
+        node.create_service(TriggerSrv, "/reset_return", _handle_reset_return)
         logging.info("Reset return service available at /reset_return")
 
     # ── Unified control/recording loop ──────────────────────────────────

@@ -33,12 +33,15 @@ in :class:`ActionSourceAwareEpisodeSampler` skips both DAgger
 policy-prefix frames *and* operator-hesitation frames.
 
 
-This module is pure NumPy and has no dataset/parquet dependencies so
-it can be reused from CLIs, notebooks, and unit tests alike.
+The detection code is pure NumPy and has no dataset/parquet dependencies so
+it can be reused from CLIs, notebooks, and unit tests alike. The argparse glue
+at the bottom is shared by the three plateau CLIs so they cannot drift apart on
+defaults.
 """
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -294,3 +297,55 @@ def load_action_min_max_from_stats(stats_json_path) -> tuple[np.ndarray, np.ndar
         raise KeyError(f"{p}: no 'action' block")
     a = raw["action"]
     return np.asarray(a["min"], dtype=np.float64), np.asarray(a["max"], dtype=np.float64)
+
+
+# ── Shared CLI glue ──────────────────────────────────────────────────────
+#
+# ``plateau-stats``, ``plateau-visualize`` and ``add-action-source-with-plateau``
+# must agree on these knobs: a threshold that means one thing when you tune it
+# and another when you apply it would silently produce a mislabelled dataset.
+
+def add_plateau_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add the plateau detection knobs shared by every plateau CLI."""
+    parser.add_argument(
+        "--tau", type=float, default=PlateauParams.tau,
+        help=f"Normalized speed threshold (default: {PlateauParams.tau}).",
+    )
+    parser.add_argument(
+        "--min-run", type=int, default=PlateauParams.min_run,
+        help="Minimum length (frames) of a low-speed run to count as a plateau "
+             f"(default: {PlateauParams.min_run}).",
+    )
+    parser.add_argument(
+        "--margin", type=int, default=PlateauParams.margin,
+        help="Frames at each edge of a plateau kept as anchors "
+             f"(default: {PlateauParams.margin}).",
+    )
+    parser.add_argument(
+        "--norm", choices=("linf", "l2"), default=PlateauParams.norm,
+        help=f"Norm for the action delta (default: {PlateauParams.norm}).",
+    )
+    parser.add_argument(
+        "--joints", type=str, default=None,
+        help="Optional comma-separated joint indices to consider "
+             "(e.g. '0,1,2,3,4,5'). Default = all joints.",
+    )
+    return parser
+
+
+def parse_joint_indices(spec: str | None) -> tuple[int, ...] | None:
+    """Turn a ``--joints`` string like ``"0,1,5"`` into a tuple, or ``None``."""
+    if not spec:
+        return None
+    return tuple(int(x) for x in spec.split(","))
+
+
+def params_from_args(args: argparse.Namespace) -> PlateauParams:
+    """Build :class:`PlateauParams` from a parser built with :func:`add_plateau_args`."""
+    return PlateauParams(
+        tau=float(args.tau),
+        min_run=int(args.min_run),
+        margin=int(args.margin),
+        norm=args.norm,
+        joint_indices=parse_joint_indices(args.joints),
+    )

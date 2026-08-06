@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-
 CONFIG_ENV_VAR = "GELLO_CONFIG"
 
 

@@ -33,28 +33,85 @@ nested_roots:
   - rama
   - smrithi
 
-# Canonical set mirrored by ``lerobot-ros-backup --all``. One private dataset
-# repo per experiment folder. Sizes are approximate (2026-05-29).
+# Canonical set mirrored by ``lerobot-ros-backup --all`` and deleted by
+# ``--delete-all``. One private dataset repo per experiment folder.
+#
+# Every entry below was verified to exist on disk (sizes approximate,
+# 2026-08-06). Keep this list in sync with the actual ``data/`` tree -- a
+# missing folder is silently skipped by ``--all``, so drift here shows up as a
+# backup that quietly covers less than you think.
+#
+# The ``repo`` values match what the default ``nested_roots`` rule would derive
+# anyway; they are spelled out so ``--all`` and ``--delete-all`` have an
+# explicit, reviewable inventory rather than whatever happens to be on disk.
+
 backup_targets:
-  - local: data/rama/dose_solid                       # ~54G
-    repo: lerobot-data-rama-dose_solid
-  - local: data/rama/funnel_insert_reactor            # ~76G
-    repo: lerobot-data-rama-funnel_insert_reactor
-  - local: data/rama/liquid_pouring                   # ~162G
-    repo: lerobot-data-rama-liquid_pouring
+  # --- Recorded teleop data (irreplaceable; back these up first) -----------
+  - local: data/smrithi/bimanual_pick_20260624        # ~8.4G
+    repo: lerobot-data-smrithi-bimanual_pick_20260624
+  - local: data/smrithi/blue_dispense_20260617        # ~11G
+    repo: lerobot-data-smrithi-blue_dispense_20260617
+  - local: data/smrithi/cap_20260717                  # ~53G
+    repo: lerobot-data-smrithi-cap_20260717
+  - local: data/smrithi/dose_solid                    # ~9.2G
+    repo: lerobot-data-smrithi-dose_solid
+  - local: data/smrithi/funnel_insert_reactor         # ~6.2G
+    repo: lerobot-data-smrithi-funnel_insert_reactor
+  - local: data/smrithi/liquid_pouring                # ~104G
+    repo: lerobot-data-smrithi-liquid_pouring
+  - local: data/smrithi/longhorizon1                  # ~22G
+    repo: lerobot-data-smrithi-longhorizon1
+  - local: data/smrithi/longhorizon2                  # ~20G
+    repo: lerobot-data-smrithi-longhorizon2
+  - local: data/smrithi/longhorizon3                  # ~2.8G
+    repo: lerobot-data-smrithi-longhorizon3
+  - local: data/smrithi/longhorizon3_renumbered_success  # ~10G
+    repo: lerobot-data-smrithi-longhorizon3_renumbered_success
+  - local: data/smrithi/needle_20260629_old           # ~9.8G
+    repo: lerobot-data-smrithi-needle_20260629_old
+  - local: data/smrithi/needle_20260707_success       # ~13G
+    repo: lerobot-data-smrithi-needle_20260707_success
+  - local: data/smrithi/pick_vial_20260524            # ~7.3G
+    repo: lerobot-data-smrithi-pick_vial_20260524
+  - local: data/smrithi/salt_20260725                 # ~8.8G
+    repo: lerobot-data-smrithi-salt_20260725
+  - local: data/smrithi/septum_insert_reactor         # ~26G
+    repo: lerobot-data-smrithi-septum_insert_reactor
+  - local: data/smrithi/stir_bar                      # ~4.9G
+    repo: lerobot-data-smrithi-stir_bar
+  - local: data/smrithi/uncap_20260713                # ~8.6G
+    repo: lerobot-data-smrithi-uncap_20260713
   - local: data/rama/scope_teleoperation_feasibility  # ~42G
     repo: lerobot-data-rama-scope_teleoperation_feasibility
-  - local: data/rama/septum_insert_reactor            # ~152G
-    repo: lerobot-data-rama-septum_insert_reactor
-  - local: data/rama/stir_bar                         # ~26G
-    repo: lerobot-data-rama-stir_bar
-  - local: data/smrithi/bimanual_pick_20260525        # ~91G
-    repo: lerobot-data-smrithi-bimanual_pick_20260525
-  - local: data/smrithi/needle_20260528               # ~2.4G
-    repo: lerobot-data-smrithi-needle_20260528
-  - local: data/smrithi/pick_vial_20260524            # ~20G
-    repo: lerobot-data-smrithi-pick_vial_20260524
+
+  # --- DAgger rollouts ------------------------------------------------------
   - local: data/dagger                                # ~1.3G
     repo: lerobot-data-dagger
-  - local: data/todolist                              # ~214M
-    repo: lerobot-data-todolist
+
+  # --- Training pools and run outputs (derived, but expensive to regenerate) -
+  - local: data/rama/lbm_canon                        # ~793M
+    repo: lerobot-data-rama-lbm_canon
+  - local: data/rama/lbm_pretrain_all_ds5             # ~5.6G
+    repo: lerobot-data-rama-lbm_pretrain_all_ds5
+  - local: data/rama/lbm_finetune_bimanual_pick       # ~3.2G
+    repo: lerobot-data-rama-lbm_finetune_bimanual_pick
+  - local: data/rama/lbm_finetune_cap                 # ~4.3G
+    repo: lerobot-data-rama-lbm_finetune_cap
+  - local: data/rama/lbm_finetune_longhorizon         # ~7.5G
+    repo: lerobot-data-rama-lbm_finetune_longhorizon
+  - local: data/rama/lbm_finetune_longhorizon1_cam_reorient  # ~8.9G
+    repo: lerobot-data-rama-lbm_finetune_longhorizon1_cam_reorient
+  - local: data/rama/lbm_finetune_longhorizon2_cam_reorient  # ~4.9G
+    repo: lerobot-data-rama-lbm_finetune_longhorizon2_cam_reorient
+  - local: data/rama/lbm_finetune_longhorizon3_cam_reorient  # ~3.9G
+    repo: lerobot-data-rama-lbm_finetune_longhorizon3_cam_reorient
+  - local: data/rama/lbm_finetune_needle              # ~3.8G
+    repo: lerobot-data-rama-lbm_finetune_needle
+  - local: data/rama/lbm_finetune_salt                # ~3.3G
+    repo: lerobot-data-rama-lbm_finetune_salt
+  - local: data/rama/lbm_finetune_uncap               # ~4.1G
+    repo: lerobot-data-rama-lbm_finetune_uncap
+
+# Deliberately NOT mirrored:
+#   data/rama/{train,finetune,longhorizon}_logs  -- plain-text run logs
+#   data/smrithi/longhorizon3_canon              -- aborted run, only meta/ exists

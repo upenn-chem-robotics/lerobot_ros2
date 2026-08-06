@@ -42,9 +42,9 @@ Usage:
 """
 
 import argparse
-import math
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -59,47 +59,45 @@ os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 import cv2
 import numpy as np
 import pyarrow.parquet as pq
-from PIL import Image
 import yaml
+from PIL import Image
 
 os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
 
 from lerobot_ros2.config_paths import resolve_config_path
-from lerobot_ros2.hub_sync import try_sync_to_hub
 from lerobot_ros2.helper import (
+    EVDEV_AVAILABLE,
+    PEDAL_DEFAULT_DEVICE,
     ArmState,
     CameraReader,
     CameraStabilizer,
+    FootPedalThread,
     ManualFlip180,
     RobotHomeSender,
     ROSArmStateListener,
     WrapJointManager,
     build_recording_snapshot,
-    load_camera_configs,
-    load_experiment_home_config,
     load_arm_configs,
+    load_camera_configs,
     load_config,
+    load_experiment_home_config,
     open_configured_cameras,
     resolve_home,
+    resolve_pedal_evdev_paths,
     resolve_unwrap_config,
     resolve_wrap_joints,
     run_cbreak_keyboard_loop,
     save_experiment_home_config,
 )
+from lerobot_ros2.hub_sync import try_sync_to_hub
 from lerobot_ros2.visualizer import LivePreview
-from lerobot_ros2.helper import (
-    EVDEV_AVAILABLE,
-    FootPedalThread,
-    PEDAL_DEFAULT_DEVICE,
-    resolve_pedal_evdev_paths,
-)
 
 try:
     import rclpy
-    from rclpy.node import Node
-    from rclpy.executors import SingleThreadedExecutor
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import SetParameters as SetParametersSrv
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
     from sensor_msgs.msg import JointState as JointStateMsg
     from std_srvs.srv import Empty as EmptySrv
     from std_srvs.srv import Trigger as TriggerSrv
@@ -2276,7 +2274,6 @@ def main() -> None:
         unwrap_settle_timeout_s=unwrap_opts["settle_timeout_s"],
     )
 
-    reset_return_service = None
     if use_reset_client:
 
         def _handle_reset_return(request: object, response: object):
@@ -2295,7 +2292,8 @@ def main() -> None:
             response.message = "reset completed" if success else "reset failed"
             return response
 
-        reset_return_service = node.create_service(TriggerSrv, "/reset_return", _handle_reset_return)
+        # The node owns the returned handle, so it does not need binding here.
+        node.create_service(TriggerSrv, "/reset_return", _handle_reset_return)
         logging.info("Reset return service available at /reset_return")
 
     # Spin ROS in background using an explicit executor we own. Using a bare
@@ -2348,7 +2346,7 @@ def main() -> None:
 
     logging.info("Waiting for action and state topics...")
     while not stop_event.is_set():
-        if all(l.is_ready for l in listeners.values()):
+        if all(listener.is_ready for listener in listeners.values()):
             break
         time.sleep(0.1)
 

@@ -21,8 +21,8 @@ from typing import Any, Callable
 import av
 import numpy as np
 import pandas as pd
-from PIL import Image
 import yaml
+from PIL import Image
 
 
 @dataclass(frozen=True)
@@ -155,38 +155,6 @@ class TeleopDataset:
             "episode_index": int(row["episode_index"]),
             "global_index": int(row["index"]),
         }
-
-    def get_video_frame(
-        self, episode_id: int, frame_idx: int, camera_key: str
-    ) -> np.ndarray:
-        """Return a single RGB frame from the pre-decoded cache.
-
-        Args:
-            episode_id: Episode index.
-            frame_idx: Frame index within the episode.
-            camera_key: e.g. 'observation.images.cam_0'.
-
-        Returns:
-            RGB image as uint8 numpy array (H, W, 3).
-
-        Raises:
-            RuntimeError: If the camera key is unknown.
-            IndexError: If the frame index is out of range.
-        """
-        if camera_key not in self.camera_keys:
-            raise RuntimeError(f"Unknown camera key: {camera_key}")
-
-        vmap = self._episode_video_map[episode_id][camera_key]
-        file_idx = vmap["file_index"]
-        start_frame = vmap["start_frame"]
-        frame_in_file = start_frame + frame_idx
-
-        if not self._preload_frames:
-            return self._decode_single_frame(camera_key, file_idx, frame_in_file)
-
-        jpeg_bytes = self._frame_store[camera_key][file_idx][frame_in_file]
-        img = Image.open(io.BytesIO(jpeg_bytes))
-        return np.array(img)
 
     def get_episode_video_source(self, episode_id: int, camera_key: str) -> dict[str, Any]:
         """Return video file path and timing metadata for one episode/camera.

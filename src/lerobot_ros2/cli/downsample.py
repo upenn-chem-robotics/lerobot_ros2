@@ -58,6 +58,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
+from lerobot_ros2.dataset_rewrite import (
+    load_data_index,
+    read_info,
+    read_stats,
+    replace_count_leaves,
+    require_dataset,
+    write_info,
+    write_stats,
+)
+
 # Populated at runtime by ``derive_key_map`` from the source dataset.
 # Maps original feature keys (``observation.images.camera_NN_<name>``) to the
 # stripped names (``observation.images.<name>``) used downstream by
@@ -372,28 +382,6 @@ def renamed_schema(schema: pa.Schema) -> pa.Schema:
     return pa.schema(fields, metadata=schema.metadata)
 
 
-def load_data_index(src: Path) -> tuple[pd.DataFrame, dict[str, pa.Table]]:
-    src_dir = src / "data"
-    tables: dict[str, pa.Table] = {}
-    frames: list[pd.DataFrame] = []
-
-    for p in sorted(src_dir.rglob("*.parquet")):
-        rel = str(p.relative_to(src))
-        table = pq.read_table(p)
-        tables[rel] = table
-
-        df = table.select(["episode_index", "index"]).to_pandas()
-        df["__source_relpath"] = rel
-        df["__source_row"] = range(table.num_rows)
-        frames.append(df)
-
-    if not frames:
-        return pd.DataFrame(columns=["episode_index", "index", "__source_relpath", "__source_row"]), tables
-
-    combined = pd.concat(frames, ignore_index=True)
-    return combined.sort_values("index").reset_index(drop=True), tables
-
-
 def trim_data_index(data_index: pd.DataFrame, skip_first_frames: int) -> pd.DataFrame:
     if skip_first_frames <= 0:
         trimmed = data_index.copy()
@@ -521,7 +509,7 @@ def rewrite_info_json(
     total_frames: int | None = None,
     total_episodes: int | None = None,
 ) -> None:
-    info = json.loads((src / "meta" / "info.json").read_text())
+    info = read_info(src)
     new_features = {}
     for key, ft in info["features"].items():
         if ft.get("dtype") == "video":
@@ -589,24 +577,13 @@ def rewrite_info_json(
                 else:
                     new_splits[split_name] = split_range
             info["splits"] = new_splits
-    out = dst / "meta" / "info.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(info, indent=4))
-
-
-def _replace_count_leaves(value: object, count: int) -> object:
-    if isinstance(value, list):
-        return [_replace_count_leaves(item, count) for item in value]
-    if isinstance(value, (int, float)):
-        return count
-    return value
+    write_info(dst, info)
 
 
 def rewrite_stats_json(src: Path, dst: Path, total_frames: int | None = None) -> None:
-    p = src / "meta" / "stats.json"
-    if not p.exists():
+    stats = read_stats(src)
+    if stats is None:
         return
-    stats = json.loads(p.read_text())
     new_stats: dict[str, object] = {}
     for k, v in stats.items():
         # Drop stats for excluded camera_NN_ keys; pass non-video / already-stripped keys through.
@@ -616,7 +593,7 @@ def rewrite_stats_json(src: Path, dst: Path, total_frames: int | None = None) ->
     if total_frames is not None:
         for key, value in list(new_stats.items()):
             if key.endswith("/count"):
-                new_stats[key] = _replace_count_leaves(value, total_frames)
+                new_stats[key] = replace_count_leaves(value, total_frames)
 
     # Slice per-axis stats for the affected state/action features. Each
     # entry is a dict like ``{"min": [...], "max": [...], ...}`` with one
@@ -641,7 +618,7 @@ def rewrite_stats_json(src: Path, dst: Path, total_frames: int | None = None) ->
                     sliced_entry[stat_name] = value
             new_stats[feature_key] = sliced_entry
 
-    (dst / "meta" / "stats.json").write_text(json.dumps(new_stats, indent=4))
+    write_stats(dst, new_stats)
 
 
 def _is_excluded_video_column(column_name: str) -> bool:
@@ -987,13 +964,12 @@ def main():
     args = ap.parse_args()
 
     src, dst = args.src.resolve(), args.dst.resolve()
-    if not (src / "meta" / "info.json").exists():
-        raise SystemExit(f"Not a LeRobot dataset: {src}")
+    require_dataset(src)
     if src == dst:
         raise SystemExit("--src and --dst must be different paths")
     dst.mkdir(parents=True, exist_ok=True)
     clean_destination(dst)
-    source_info = json.loads((src / "meta" / "info.json").read_text())
+    source_info = read_info(src)
     source_fps = int(source_info["fps"])
 
     # Auto-derive the camera rename map from the source dataset, dropping any
@@ -1053,7 +1029,12 @@ def main():
     total_episodes: int | None = None
 
     if args.skip_first_frames > 0 or delete_episode_ids:
-        data_index, source_tables = load_data_index(src)
+        data_index, source_tables = load_data_index(
+            src,
+            rel_col="__source_relpath",
+            row_col="__source_row",
+            allow_empty=True,
+        )
         data_index = delete_episodes(data_index, delete_episode_ids)
         if delete_episode_ids:
             data_index, episode_id_map = remap_episode_indices(data_index)

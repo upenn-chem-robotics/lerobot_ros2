@@ -35,6 +35,8 @@ dependencies = [
 viz = ["gradio", "matplotlib"]
 pedal = ["evdev"]
 all = ["lerobot-ros2[viz,pedal]"]
+# Pinned so a ruff release cannot turn a green checkout red on its own.
+dev = ["ruff==0.16.1", "pytest"]
 
 [project.scripts]
 lerobot-ros-record = "lerobot_ros2.cli.record:main"
@@ -43,6 +45,7 @@ lerobot-ros-dagger = "lerobot_ros2.cli.dagger:main"
 lerobot-ros-export = "lerobot_ros2.cli.export:main"
 lerobot-ros-probe-cameras = "lerobot_ros2.cli.probe_cameras:main"
 lerobot-ros-downsample = "lerobot_ros2.cli.downsample:main"
+lerobot-ros-canonicalize = "lerobot_ros2.cli.canonicalize:main"
 lerobot-ros-reorient = "lerobot_ros2.cli.reorient:main"
 lerobot-ros-app = "lerobot_ros2.cli.app:main"
 lerobot-ros-train-dagger = "lerobot_ros2.cli.train_dagger:main"
@@ -61,3 +64,39 @@ lerobot-ros-renumber-episodes = "lerobot_ros2.cli.renumber_episodes:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["*.egg-info"]
+
+[tool.ruff.lint]
+# Deliberately narrow: the default rules (pyflakes + the pycodestyle subset that
+# catches real bugs) plus import sorting. This is the set the codebase already
+# passes, so a lint failure in CI means something new is actually wrong rather
+# than a pre-existing style debt resurfacing. Widen it when you are willing to
+# fix the backlog it uncovers.
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = [
+    # Several CLIs must set OPENCV_LOG_LEVEL / OPENCV font paths, or probe for
+    # optional ROS and LeRobot plugin modules, before the corresponding import
+    # runs. That ordering is load-bearing, so imports genuinely cannot all sit
+    # at the top of the file.
+    "E402",
+]
+
+[tool.ruff.lint.isort]
+# The two policy plugins under packages/ are separate distributions but they are
+# this repo's code, so group them with lerobot_ros2 rather than with upstream
+# lerobot.
+known-first-party = [
+    "lerobot_ros2",
+    "lerobot_policy_strided_diffusion",
+    "lerobot_policy_action_history_diffusion",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The hardware-facing CLIs need ROS 2 and a real robot; the suite here covers
+# the pure-logic pieces that run anywhere.
+addopts = "-ra"

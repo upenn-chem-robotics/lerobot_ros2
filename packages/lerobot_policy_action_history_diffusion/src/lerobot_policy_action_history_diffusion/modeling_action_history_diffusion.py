@@ -27,17 +27,15 @@ from collections import deque
 from typing import Any
 
 import torch
-from torch import Tensor, nn
-
 from lerobot.policies.diffusion.modeling_diffusion import (
     DiffusionConditionalUnet1d,
     DiffusionModel,
     DiffusionPolicy,
 )
 from lerobot.utils.constants import ACTION
+from torch import Tensor, nn
 
 from .configuration_action_history_diffusion import ActionHistoryDiffusionConfig
-
 
 # Key used to carry the (B, n_action_history, action_dim) past-action tensor
 # through the batch. Distinct from ``ACTION`` to keep target and conditioning

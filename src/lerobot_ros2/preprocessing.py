@@ -10,7 +10,7 @@ The training-side counterpart lives in
 ``lerobot.datasets.transforms.ImageTransforms.apply_for_key`` and is fed by
 ``ImageTransformsConfig.per_camera_crops``. Deploy/dagger reach into the
 training run's ``train_config.json`` to recover the same dictionary; see
-``detect_per_camera_crops`` in ``lerobot_ros2.cli.deploy``.
+``detect_per_camera_crops`` in ``lerobot_ros2.policy_runtime``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from typing import Any, Dict, Mapping, Optional
 
 import torch
 from torchvision.transforms.v2 import functional as F  # noqa: N812
-
 
 _REQUIRED_KEYS = ("top", "left", "height", "width")
 
@@ -104,7 +103,7 @@ def load_per_camera_crops_from_train_config(
 ) -> Dict[str, Dict[str, int]]:
     """Read ``per_camera_crops`` out of ``train_config.json`` next to ``policy_path``.
 
-    Mirrors ``deploy.detect_training_resize`` in spirit: tolerate a missing or
+    Mirrors ``policy_runtime.detect_training_resize`` in spirit: tolerate a missing or
     malformed file and return an empty mapping so inference keeps working.
     """
     candidates = [

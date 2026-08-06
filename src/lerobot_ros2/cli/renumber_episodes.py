@@ -42,7 +42,6 @@ Examples::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 import sys
@@ -51,6 +50,14 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from lerobot_ros2.dataset_rewrite import (
+    load_data_index,
+    read_info,
+    require_dataset,
+    set_episode_counters,
+    write_info,
+)
 
 # Copied verbatim into the destination. Everything else under ``meta/`` is
 # rewritten, and derived directories (``exports/``, ``images/``) are skipped
@@ -61,23 +68,6 @@ _ROOT_PASSTHROUGH = (
     "recording_config.yaml",
     "plateau_filter_config.yaml",
 )
-
-
-def _read_data_index(src: Path) -> tuple[pd.DataFrame, dict[str, pa.Table]]:
-    """Read every ``data/`` parquet, tracking which row came from where."""
-    tables: dict[str, pa.Table] = {}
-    frames: list[pd.DataFrame] = []
-    for path in sorted((src / "data").rglob("*.parquet")):
-        rel = str(path.relative_to(src))
-        table = pq.read_table(path)
-        tables[rel] = table
-        df = table.select(["episode_index", "frame_index", "index"]).to_pandas()
-        df["__rel"] = rel
-        df["__row"] = range(table.num_rows)
-        frames.append(df)
-    if not frames:
-        raise SystemExit(f"no data parquets under {src / 'data'}")
-    return pd.concat(frames, ignore_index=True), tables
 
 
 def _check_row_order(combined: pd.DataFrame) -> None:
@@ -179,8 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     src, dst = args.src.expanduser().resolve(), args.dst.expanduser().resolve()
-    if not (src / "meta" / "info.json").exists():
-        raise SystemExit(f"not a LeRobot dataset: {src}")
+    require_dataset(src)
     if src == dst:
         raise SystemExit("--src and --dst must differ; this CLI never rewrites in place")
     if dst.exists():
@@ -188,7 +177,13 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"destination exists (use --overwrite): {dst}")
         shutil.rmtree(dst)
 
-    combined, tables = _read_data_index(src)
+    # Deliberately unsorted: _check_row_order below verifies that the parquets
+    # already concatenate into whole episodes back to back.
+    combined, tables = load_data_index(
+        src,
+        columns=("episode_index", "frame_index", "index"),
+        sort_by_index=False,
+    )
     _check_row_order(combined)
 
     ep_ids = sorted(int(e) for e in combined["episode_index"].unique())
@@ -223,12 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     _write_data(dst, combined, tables)
     _write_episode_meta(src, dst, ep_map, summary)
 
-    info = json.loads((src / "meta" / "info.json").read_text())
+    info = read_info(src)
     stale = (info.get("total_episodes"), info.get("total_frames"))
-    info["total_episodes"] = total_episodes
-    info["total_frames"] = total_frames
-    info["splits"] = {"train": f"0:{total_episodes}"}
-    (dst / "meta" / "info.json").write_text(json.dumps(info, indent=4))
+    set_episode_counters(info, total_episodes, total_frames)
+    write_info(dst, info)
     logging.info(
         "  info.json counters %s -> (%d, %d)", stale, total_episodes, total_frames
     )

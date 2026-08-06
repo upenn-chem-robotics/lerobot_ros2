@@ -36,19 +36,18 @@ Example
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-
 from lerobot.datasets.compute_stats import aggregate_stats, get_feature_stats
 from lerobot.datasets.dataset_tools import _keep_episodes_from_video_with_av
 from lerobot.datasets.io_utils import write_info, write_stats
+
+from lerobot_ros2.dataset_rewrite import data_parquets, episode_parquets, read_info
 
 
 def _recursive_to_array(value):
@@ -84,7 +83,7 @@ def trim_tail(
         shutil.rmtree(dst)
     dst.mkdir(parents=True)
 
-    info = json.loads((src / "meta" / "info.json").read_text())
+    info = read_info(src)
     fps = int(info["fps"])
     features = info["features"]
     video_path_fmt = info["video_path"]
@@ -95,12 +94,12 @@ def trim_tail(
     print(f"video features:   {video_feats}")
     print(f"numeric features: {numeric_feats}")
 
-    src_ep_path = sorted((src / "meta" / "episodes").rglob("*.parquet"))[0]
+    src_ep_path = episode_parquets(src)[0]
     src_ep_tbl = pq.read_table(src_ep_path)
     src_ep_df = src_ep_tbl.to_pandas().sort_values("episode_index").reset_index(drop=True)
     src_ep_schema = src_ep_tbl.schema
 
-    src_data_path = sorted((src / "data").rglob("*.parquet"))[0]
+    src_data_path = data_parquets(src)[0]
     src_data_tbl = pq.read_table(src_data_path)
     src_data_df = (
         src_data_tbl.to_pandas()
@@ -306,7 +305,7 @@ def trim_tail(
 
     shutil.copy(src / "meta" / "tasks.parquet", dst / "meta" / "tasks.parquet")
 
-    new_info = json.loads((src / "meta" / "info.json").read_text())
+    new_info = read_info(src)
     new_info["total_frames"] = total_new
     new_info["splits"] = {"train": f"0:{new_info['total_episodes']}"}
     write_info(new_info, dst)

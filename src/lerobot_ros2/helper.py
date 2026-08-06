@@ -5,25 +5,24 @@ import contextlib
 import logging
 import math
 import os
-import glob
 import re
+import select
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 import yaml
-import time
-
-import select
 
 try:
-    from evdev import InputDevice, categorize, ecodes as ev_ecodes
+    from evdev import InputDevice, categorize
+    from evdev import ecodes as ev_ecodes
     EVDEV_AVAILABLE = True
 except ImportError:
     EVDEV_AVAILABLE = False
@@ -826,39 +825,6 @@ class CameraReader:
         self._cap.release()
 
 
-def detect_cameras() -> List[CameraReader]:
-    by_path = sorted(glob.glob("/dev/v4l/by-path/*-video-index0"))
-    if by_path:
-        paths = [os.path.realpath(p) for p in by_path]
-        logging.info(f"Using stable USB paths: {dict(zip(by_path, paths))}")
-    else:
-        paths = sorted(
-            (p for p in glob.glob("/dev/video*") if p[len("/dev/video"):].isdigit()),
-            key=lambda p: int(p[len("/dev/video"):]),
-        )
-
-    readers: List[CameraReader] = []
-    with quiet_stderr():
-        for path in paths:
-            cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                ret, _ = cap.read()
-                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                cap.release()
-                if ret and w > 0 and h > 0:
-                    reader = CameraReader(path)
-                    reader.start()
-                    readers.append(reader)
-                    logging.info(f"Camera {path}: {reader.width}x{reader.height}")
-            else:
-                cap.release()
-    if not readers:
-        logging.warning("No cameras detected")
-    return readers
-
-
 def open_configured_cameras(
     camera_configs: List[CameraConfig],
     override_resolution: Optional[Tuple[int, int]] = None,
@@ -1259,18 +1225,6 @@ def save_experiment_home_config(
     with open(experiment_path, "w") as f:
         yaml.safe_dump(experiment, f, sort_keys=False)
     return experiment_path
-
-
-def extract_wrap_joints(experiment_config: Optional[dict]) -> Optional[List[str]]:
-    """Return the wrap_joints list from an experiment_config.yaml dict, if any."""
-    if not experiment_config:
-        return None
-    raw = experiment_config.get("wrap_joints")
-    if raw is None:
-        return None
-    if not isinstance(raw, list):
-        return None
-    return [str(x) for x in raw]
 
 
 def extract_home_positions(experiment_config: Optional[dict]) -> dict[str, List[float]]:
@@ -1976,7 +1930,3 @@ def run_cbreak_keyboard_loop(
                 handler()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-if __name__ == "__main__":
-    print("Oooops, this is just a helper module, not meant to be run directly.")

@@ -23,12 +23,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from lerobot_ros2.data_loader import ArmSpec, TeleopDataset
-from lerobot_ros2.visualizer import tile_frames_grid
 from lerobot_ros2.video_exporter import (
     build_episode_timeline_figure,
     compute_grid_shape,
     export_episode_grid_video,
 )
+from lerobot_ros2.visualizer import tile_frames_grid
 
 
 def _chunked(items: list[int], chunk_size: int) -> list[list[int]]:

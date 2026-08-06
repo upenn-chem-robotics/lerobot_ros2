@@ -47,9 +47,9 @@ Usage::
 import sys
 from pathlib import Path
 
+import lerobot.scripts.lerobot_train as _lt
 import numpy as np
 import pyarrow.parquet as pq
-import lerobot.scripts.lerobot_train as _lt
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.utils.import_utils import register_third_party_plugins

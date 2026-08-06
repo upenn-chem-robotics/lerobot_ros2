@@ -40,7 +40,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-
 from lerobot.datasets.dataset_tools import add_features
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 

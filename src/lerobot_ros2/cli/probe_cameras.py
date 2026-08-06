@@ -31,7 +31,6 @@ import yaml
 from lerobot_ros2.config_paths import resolve_config_path
 from lerobot_ros2.helper import CameraConfig, load_camera_configs, load_config
 
-
 CONTROL_LINE_RE = re.compile(
     r"""
     ^\s*

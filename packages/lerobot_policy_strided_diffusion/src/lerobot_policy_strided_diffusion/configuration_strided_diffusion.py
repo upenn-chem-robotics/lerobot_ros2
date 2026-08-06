@@ -18,12 +18,11 @@ only correct when ``self.fps == ds_meta.fps``.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
-
-import os
 
 
 @PreTrainedConfig.register_subclass("strided_diffusion")

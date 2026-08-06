@@ -29,7 +29,6 @@ from __future__ import annotations
 import unittest
 
 import torch
-
 from lerobot.configs.types import FeatureType, PolicyFeature
 
 from lerobot_policy_action_history_diffusion import (

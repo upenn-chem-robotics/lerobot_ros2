@@ -45,9 +45,10 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from lerobot_ros2.plateau import (
-    PlateauParams,
+    add_plateau_args,
     detect_plateaus,
     load_action_min_max_from_stats,
+    params_from_args,
 )
 
 
@@ -139,17 +140,7 @@ def _print_run_length_histogram(result, fps: int) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--src", required=True, type=Path, help="LeRobot dataset root.")
-    p.add_argument("--tau", type=float, default=0.005,
-                   help="Normalized speed threshold (default: 0.005).")
-    p.add_argument("--min-run", type=int, default=5,
-                   help="Minimum length (frames) of a low-speed run to count as plateau (default: 5).")
-    p.add_argument("--margin", type=int, default=2,
-                   help="Frames at each edge of a plateau kept as anchors (default: 2).")
-    p.add_argument("--norm", choices=("linf", "l2"), default="linf",
-                   help="Norm for action delta (default: linf).")
-    p.add_argument("--joints", type=str, default=None,
-                   help="Optional comma-separated joint indices to consider (e.g. '0,1,2,3,4,5'). "
-                        "None = all joints.")
+    add_plateau_args(p)
     p.add_argument("--top-k", type=int, default=10,
                    help="How many top/bottom episodes to print (default: 10).")
     p.add_argument("--json-out", type=Path, default=None,
@@ -189,18 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     action, ep_idx = _load_action_and_episode(src)
     logging.info("  loaded %d frames across %d episodes", action.shape[0], int(np.unique(ep_idx).size))
 
-    joints = None
-    if args.joints:
-        joints = tuple(int(x) for x in args.joints.split(","))
-
-    params = PlateauParams(
-        tau=float(args.tau),
-        min_run=int(args.min_run),
-        margin=int(args.margin),
-        norm=args.norm,
-        joint_indices=joints,
-    )
-
+    params = params_from_args(args)
     result = detect_plateaus(action, ep_idx, a_min, a_max, params)
 
     _print_summary(result, fps, top_k=int(args.top_k))

@@ -42,21 +42,20 @@ Examples::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 import yaml
-
 from lerobot.datasets.dataset_tools import add_features
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from lerobot_ros2.plateau import (
-    PlateauParams,
+    add_plateau_args,
     detect_plateaus,
     load_action_min_max_from_stats,
+    params_from_args,
 )
 
 
@@ -104,12 +103,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dst-root", required=True, type=Path)
     p.add_argument("--src-repo-id", type=str, default=None)
     p.add_argument("--dst-repo-id", type=str, default=None)
-    p.add_argument("--tau", type=float, default=0.005)
-    p.add_argument("--min-run", type=int, default=5)
-    p.add_argument("--margin", type=int, default=2)
-    p.add_argument("--norm", choices=("linf", "l2"), default="linf")
-    p.add_argument("--joints", type=str, default=None,
-                   help="Comma-separated joint indices to consider; default = all.")
+    add_plateau_args(p)
     return p.parse_args(argv)
 
 
@@ -135,14 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     a_min, a_max = load_action_min_max_from_stats(stats_json)
     action, ep_idx, existing_as = _load_action_episode_existing_as(src_root)
 
-    joints = None
-    if args.joints:
-        joints = tuple(int(x) for x in args.joints.split(","))
-
-    params = PlateauParams(
-        tau=float(args.tau), min_run=int(args.min_run), margin=int(args.margin),
-        norm=args.norm, joint_indices=joints,
-    )
+    params = params_from_args(args)
     result = detect_plateaus(action, ep_idx, a_min, a_max, params)
 
     if existing_as is None:

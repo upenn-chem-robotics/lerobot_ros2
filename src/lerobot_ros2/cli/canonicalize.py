@@ -32,13 +32,13 @@ timestamp.
 
 Examples::
 
-    python -m lerobot_ros2.cli.canonicalize \
+    lerobot-ros-canonicalize \
         --src /lerobot-ros/data/smrithi/stir_bar/policy/train/stir_bar_20260505_ds5 \
         --dst /lerobot-ros/data/rama/lbm_canon/stir_bar \
         --task-name stir_bar
 
     # right-arm dataset that also carries DAgger episodes and AV1 video
-    python -m lerobot_ros2.cli.canonicalize \
+    lerobot-ros-canonicalize \
         --src .../septum.../train --dst .../lbm_canon/septum \
         --task-name septum_insert_reactor \
         --drop-dagger-episodes --reencode-video
@@ -58,6 +58,15 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from lerobot_ros2.dataset_rewrite import (
+    load_data_index,
+    read_info,
+    read_stats,
+    require_dataset,
+    write_info,
+    write_stats,
+)
 
 ARM_JOINTS = (
     "shoulder_pan_joint",
@@ -166,27 +175,6 @@ def dagger_episodes(df: pd.DataFrame) -> set[int]:
 
 
 # ── data parquet rewrite ─────────────────────────────────────────────────
-
-
-def load_data_index(src: Path) -> tuple[pd.DataFrame, dict[str, pa.Table]]:
-    """Read every ``data/`` parquet, keeping track of which row came from where."""
-    tables: dict[str, pa.Table] = {}
-    frames: list[pd.DataFrame] = []
-    for p in sorted((src / "data").rglob("*.parquet")):
-        rel = str(p.relative_to(src))
-        table = pq.read_table(p)
-        tables[rel] = table
-        cols = ["episode_index", "index", "frame_index"]
-        if "action_source" in table.schema.names:
-            cols.append("action_source")
-        df = table.select(cols).to_pandas()
-        df["__rel"] = rel
-        df["__row"] = range(table.num_rows)
-        frames.append(df)
-    if not frames:
-        raise SystemExit(f"no data parquets under {src}/data")
-    combined = pd.concat(frames, ignore_index=True)
-    return combined.sort_values("index").reset_index(drop=True), tables
 
 
 def widen_table(
@@ -380,10 +368,9 @@ def rewrite_stats_json(
     park_right: list[float],
     mirror_camera: str,
 ) -> None:
-    path = src / "meta" / "stats.json"
-    if not path.exists():
+    stats = read_stats(src)
+    if stats is None:
         return
-    stats = json.loads(path.read_text())
     keep, _ = pad_indices(layout["side"])
     base = park_vector(layout["side"], park_left, park_right)
 
@@ -409,7 +396,7 @@ def rewrite_stats_json(
     # the column lives in the data parquets only, never in the stats.
     stats.pop("action_source", None)
 
-    (dst / "meta" / "stats.json").write_text(json.dumps(stats, indent=4))
+    write_stats(dst, stats)
 
 
 def rewrite_episodes(
@@ -591,15 +578,14 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     src, dst = args.src.resolve(), args.dst.resolve()
-    if not (src / "meta" / "info.json").exists():
-        raise SystemExit(f"not a LeRobot dataset: {src}")
+    require_dataset(src)
     if dst.exists():
         if not args.overwrite:
             raise SystemExit(f"destination exists (use --overwrite): {dst}")
         shutil.rmtree(dst)
     (dst / "meta").mkdir(parents=True)
 
-    info = json.loads((src / "meta" / "info.json").read_text())
+    info = read_info(src)
     layout = detect_layout(info)
     mirror = "front" if "front" in layout["cameras"] else layout["cameras"][0]
 
@@ -608,7 +594,11 @@ def main(argv=None) -> int:
           f"cameras={layout['cameras']} missing={layout['missing_camera']} "
           f"action_source={'present' if layout['has_action_source'] else 'ADD=1'}")
 
-    index, tables = load_data_index(src)
+    index, tables = load_data_index(
+        src,
+        columns=("episode_index", "index", "frame_index"),
+        optional_columns=("action_source",),
+    )
 
     dropped: set[int] = set()
     if args.drop_dagger_episodes:
@@ -642,7 +632,7 @@ def main(argv=None) -> int:
     new_info = rewrite_info(
         info, layout, total_frames, total_episodes, mirror, tuple(args.source_shape)
     )
-    (dst / "meta" / "info.json").write_text(json.dumps(new_info, indent=4))
+    write_info(dst, new_info)
     hf_meta = hf_metadata_for(new_info)
 
     task_index = write_tasks(dst, args.task_name)

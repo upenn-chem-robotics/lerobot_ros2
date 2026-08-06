@@ -15,9 +15,9 @@ import av  # type: ignore[import-not-found]
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 import numpy as np
-from PIL import Image, ImageDraw
+from matplotlib.figure import Figure
+from PIL import Image
 
 try:
     from PIL.Image import Resampling
@@ -192,34 +192,6 @@ def compute_grid_shape(item_count: int) -> tuple[int, int]:
             best_score = score
 
     return best_rows, best_cols
-
-
-def _build_camera_grid(
-    images: list[np.ndarray], cam_width: int, max_cols: int
-) -> np.ndarray:
-    """Arrange *images* into a grid of up to *max_cols* columns.
-
-    Each image is resized to *cam_width*; rows are height-padded so
-    hstack works.  The last row is padded with black if it has fewer
-    than *max_cols* images.
-    """
-    resized = [_resize_to_width(img, cam_width) for img in images]
-    cols = min(len(resized), max_cols)
-
-    rows: list[np.ndarray] = []
-    for start in range(0, len(resized), cols):
-        chunk = resized[start : start + cols]
-        target_h = max(c.shape[0] for c in chunk)
-        padded = []
-        for c in chunk:
-            if c.shape[0] < target_h:
-                c = np.pad(c, ((0, target_h - c.shape[0]), (0, 0), (0, 0)))
-            padded.append(c)
-        while len(padded) < cols:
-            padded.append(np.zeros((target_h, cam_width, 3), dtype=np.uint8))
-        rows.append(np.concatenate(padded, axis=1))
-
-    return np.concatenate(rows, axis=0)
 
 
 def _build_grid_from_tiles(tiles: list[np.ndarray], max_cols: int) -> np.ndarray:

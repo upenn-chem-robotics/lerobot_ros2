@@ -221,10 +221,13 @@ Dataset prep (no ROS 2 needed):
 | Command                | Description                                 |
 |------------------------|---------------------------------------------|
 | `lerobot-ros-downsample` | Rewrite + downsample a LeRobot v3 dataset |
+| `lerobot-ros-canonicalize` | Widen a single-arm / 2-camera dataset to the bimanual 3-camera LBM schema so it can be merged into one pretraining pool |
 | `lerobot-ros-add-action-source` | Add `action_source = 1` to a base teleop dataset so it is schema-compatible with DAgger datasets |
 | `lerobot-ros-add-action-source-with-plateau` | Plateau-aware sibling: tags no-motion frames `0` so they are not sampled as anchors |
 | `lerobot-ros-trim-tail` | Drop the trailing fraction of frames per episode (stationary "completion" tails) |
 | `lerobot-ros-fix-subtasks` | Audit `subtask_index` labels per episode and repair a mislabelled one from subtask boundary times, instead of re-recording it |
+| `lerobot-ros-renumber-episodes` | Compact sparse `episode_index` values left by a run that was killed mid-session, so LeRobot can load the dataset again |
+| `lerobot-ros-reorient` | Audit and rotate 180-degree-flipped wrist-camera episodes (OBSBOT auto-rotation) |
 
 Inspect / debug:
 
@@ -275,7 +278,7 @@ changes.
 lerobot-ros-backup --all
 
 # Or a single folder:
-lerobot-ros-backup data/rama/dose_solid
+lerobot-ros-backup data/smrithi/dose_solid
 
 # Preview the repo mapping without uploading:
 lerobot-ros-backup --all --dry-run
@@ -285,9 +288,9 @@ lerobot-ros-backup --all --dry-run
 
 ```bash
 # Confirm a repo holds every local file before you remove the folder:
-lerobot-ros-backup --verify data/rama/dose_solid
+lerobot-ros-backup --verify data/smrithi/dose_solid
 # Only after [OK]:
-rm -rf data/rama/dose_solid
+rm -rf data/smrithi/dose_solid
 ```
 
 ### Automatic upload going forward

@@ -17,7 +17,6 @@ import numpy as np
 
 from .helper import quiet_stderr
 
-
 __all__ = ["LivePreview", "tile_frames", "tile_frames_grid"]
 
 
@@ -218,6 +217,3 @@ class LivePreview:
             cv2.destroyAllWindows()
         except cv2.error:
             pass
-
-if __name__ == "__main__":
-    print("Oooops, this is just a helper module, not meant to be run directly.")
