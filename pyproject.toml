@@ -57,6 +57,7 @@ lerobot-ros-plateau-visualize = "lerobot_ros2.cli.plateau_visualize:main"
 lerobot-ros-trim-tail = "lerobot_ros2.cli.trim_tail:main"
 lerobot-ros-cut = "lerobot_ros2.cli.cut:main"
 lerobot-ros-fix-subtasks = "lerobot_ros2.cli.fix_subtasks:main"
+lerobot-ros-renumber-episodes = "lerobot_ros2.cli.renumber_episodes:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

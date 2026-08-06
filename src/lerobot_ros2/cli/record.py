@@ -58,6 +58,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
 import cv2
 import numpy as np
+import pyarrow.parquet as pq
 from PIL import Image
 import yaml
 
@@ -1742,6 +1743,101 @@ def _dataset_episode_count(root: Path) -> int:
         return 0
 
 
+def _durable_dataset_counters(root: Path) -> Optional[Tuple[int, int]]:
+    """``(next_episode_index, next_frame_index)`` implied by the data on disk.
+
+    Both counters in ``meta/info.json`` are allocators rather than
+    descriptions: LeRobot stamps a new episode with ``total_episodes`` and its
+    rows with ``arange(total_frames, ...)``, bumping both as soon as the
+    episode is handed to the writer. Parquet footers only land when
+    ``finalize()`` runs, so a session killed mid-run leaves both counters
+    permanently ahead of the data that survived, and the next session starts
+    past the gap where the lost episodes should have gone.
+
+    Returns ``None`` when the surviving data cannot be read in full. Callers
+    must keep the ``info.json`` values in that case -- a partial read
+    understates the counters, and recording against an understated counter
+    overwrites episodes that are still on disk.
+    """
+    episode_parts = sorted((root / "meta" / "episodes").rglob("*.parquet"))
+    data_parts = sorted((root / "data").rglob("*.parquet"))
+    if not episode_parts or not data_parts:
+        return None
+    try:
+        # Take the episode high-water mark across *both* the metadata and the
+        # rows themselves. A session killed between its data flush and its
+        # metadata write leaves an episode that exists only in ``data/``, and
+        # allocating that index again would put two different episodes under
+        # one number.
+        last_episode = max(
+            max(pq.read_table(p, columns=["episode_index"]).column("episode_index").to_pylist())
+            for p in episode_parts + data_parts
+        )
+        last_frame = max(
+            max(pq.read_table(p, columns=["index"]).column("index").to_pylist())
+            for p in data_parts
+        )
+    except Exception:
+        logging.exception(
+            "Could not read the episode/frame indices under %s, so meta/info.json "
+            "is being left exactly as it is", root,
+        )
+        return None
+    return int(last_episode) + 1, int(last_frame) + 1
+
+
+def _realign_counters_after_crash(root: Path) -> None:
+    """Point ``info.json``'s allocators back at the data that actually landed.
+
+    Runs before the dataset is resumed, because LeRobot reads both counters
+    straight out of ``info.json`` to number the next episode. Skipped entirely
+    unless every surviving parquet could be read, and the values written are
+    one past the highest surviving index, so no counter can ever be moved to
+    where an existing episode already sits.
+    """
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    durable = _durable_dataset_counters(root)
+    if durable is None:
+        return
+    next_episode, next_frame = durable
+    try:
+        info = json.loads(info_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    stale_episodes = int(info.get("total_episodes", 0))
+    stale_frames = int(info.get("total_frames", 0))
+    if (stale_episodes, stale_frames) == (next_episode, next_frame):
+        return
+
+    if stale_episodes > next_episode or stale_frames > next_frame:
+        cause = (
+            "a previous session was killed after its counters advanced but "
+            "before its parquet footers landed, so the episodes it lost would "
+            "be skipped over instead of refilled"
+        )
+    else:
+        cause = (
+            "a previous session wrote episode rows that its metadata never "
+            "recorded, so the next episode would land on an index that "
+            "already has frames"
+        )
+    logging.warning(
+        "meta/info.json allocates episode %d / frame %d next, but the data on "
+        "disk ends at episode %d / frame %d -- %s. Realigning to episode %d / "
+        "frame %d.",
+        stale_episodes, stale_frames, next_episode - 1, next_frame - 1, cause,
+        next_episode, next_frame,
+    )
+    info["total_episodes"] = next_episode
+    info["total_frames"] = next_frame
+    info["splits"] = {"train": f"0:{next_episode}"}
+    tmp_path = info_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(info, indent=4))
+    os.replace(tmp_path, info_path)
+
+
 def _find_resumable_dataset(root: Path) -> Optional[Path]:
     """Locate the dataset under ``root`` that new episodes should append to.
 
@@ -2291,6 +2387,7 @@ def main() -> None:
         )
         if _can_resume:
             logging.info(f"Resuming existing dataset at {root}")
+            _realign_counters_after_crash(root)
             dataset = LeRobotDataset.resume(
                 repo_id=repo_id,
                 root=root,

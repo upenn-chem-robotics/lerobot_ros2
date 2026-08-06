@@ -46,12 +46,17 @@ rotation_arm: right
 # The list length is the default for `--subtask-count`. Remove the key (or pass
 # an empty list) to keep every arm following Gello for the whole episode.
 subtask_arms:
-  - {arm: left,  name: sep funnel}
-  - {arm: left,  name: funnel on}
-  - {arm: right, name: liquid1}
-  - {arm: right, name: liquid2}
-  - {arm: right, name: funnel off}
-  - {arm: right, name: septum on}
+  - {arm: left, name: funnel}
+  - {arm: left, name: paper}
+  - {arm: right, name: rod}
+  - {arm: right, name: pour}
+
+  # - {arm: left,  name: sep funnel}
+  # - {arm: left,  name: funnel on}
+  # - {arm: right, name: liquid1}
+  # - {arm: right, name: liquid2}
+  # - {arm: right, name: funnel off}
+  # - {arm: right, name: septum on}
 
 use_reset_client: false
 
@@ -153,7 +158,7 @@ left_cameras:
 
 right_cameras:
   right_wrist_top:
-    port: /dev/video0
+    port: /dev/video2
     settings:
       focus_automatic_continuous: 0
       zoom_absolute: 0
@@ -167,7 +172,7 @@ other_cameras:
   #   settings:
   #     focus_absolute: 20
   front:
-    port: /dev/video2
+    port: /dev/video0
     settings:
       # Front cam was the one observed auto-zooming during recording. Lock the
       # autofocus + zoom explicitly here (belt-and-suspenders with the shared

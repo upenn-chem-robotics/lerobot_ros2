@@ -46,6 +46,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 import av  # type: ignore[import-not-found]
@@ -402,6 +403,23 @@ def _build_speed_strip(
     return strip
 
 
+def _format_index_ranges(values: Iterable[int]) -> str:
+    """Collapse indices into a compact ``"0-1,11-44"`` string."""
+    ordered = sorted(set(int(v) for v in values))
+    if not ordered:
+        return "(none)"
+    spans: list[str] = []
+    run_start = prev = ordered[0]
+    for v in ordered[1:]:
+        if v == prev + 1:
+            prev = v
+            continue
+        spans.append(str(run_start) if run_start == prev else f"{run_start}-{prev}")
+        run_start = prev = v
+    spans.append(str(run_start) if run_start == prev else f"{run_start}-{prev}")
+    return ",".join(spans)
+
+
 def _classes_for_episode(
     ep_slice: slice, plateau_mask: np.ndarray, existing_as: np.ndarray | None,
 ) -> np.ndarray:
@@ -641,6 +659,22 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = args.output_dir.expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_paths = {e: out_dir / f"episode_{e:04d}_plateau.mp4" for e in episodes}
+
+    present = set(int(e) for e in np.unique(ep_idx))
+    missing = [e for e in episodes if e not in present]
+    if missing:
+        logging.warning(
+            "Episode(s) %s are not in %s. Available: %s",
+            ",".join(str(e) for e in missing), src, _format_index_ranges(present),
+        )
+        episodes = [e for e in episodes if e in present]
+        if not episodes:
+            print(
+                f"error: none of the requested episodes exist in {src}; "
+                f"available episodes: {_format_index_ranges(present)}",
+                file=sys.stderr,
+            )
+            return 2
 
     for ep in episodes:
         out = out_paths[ep]
