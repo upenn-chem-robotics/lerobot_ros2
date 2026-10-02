@@ -79,8 +79,8 @@ import pandas as pd
 
 from lerobot_ros2.visualizer import tile_frames_grid
 
-FFMPEG = "/bin/ffmpeg"
-FFPROBE = "/bin/ffprobe"
+FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
 IMG_PREFIX = "observation.images."
 
 _CAMERA_INDEX_RE = re.compile(r"^camera_\d+_(?P<name>.+)$")

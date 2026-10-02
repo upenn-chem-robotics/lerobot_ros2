@@ -69,8 +69,6 @@ import yaml
 from PIL import Image
 from torchvision.transforms import v2 as transforms_v2
 
-os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
-
 # Reuse the GELLO control helpers and shared recording scaffolding from
 # record.py: they already implement exactly the handover surface we need
 # (control_mode IDLE <-> NORMAL + transition_ready handshake, reset service

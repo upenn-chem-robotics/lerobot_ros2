@@ -1,0 +1,6 @@
+# False positives from the historical generated Conda export in environment.yml.
+# Each match is a package assignment (for example, package-name=version), not a credential.
+e4f20d0f458e9e076d5acb621b47bd15abd4c945:environment.yml:generic-api-key:98
+e4f20d0f458e9e076d5acb621b47bd15abd4c945:environment.yml:generic-api-key:125
+e4f20d0f458e9e076d5acb621b47bd15abd4c945:environment.yml:generic-api-key:183
+e4f20d0f458e9e076d5acb621b47bd15abd4c945:environment.yml:generic-api-key:354

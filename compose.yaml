@@ -1,0 +1,55 @@
+name: lerobot-ros2
+x-common: &common
+  build:
+    context: .
+    target: runtime
+    args:
+      APP_UID: ${UID:-1000}
+      APP_GID: ${GID:-1000}
+  image: lerobot-ros2:${IMAGE_TAG:-dev}
+  init: true
+  environment:
+    GELLO_CONFIG: /config/gello.yaml
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  volumes:
+    - ${LEROBOT_DATA:-./data}:/data
+    - ${LEROBOT_CONFIG:-./config.local}:/config:ro
+    - hf-cache:/cache/huggingface
+    - torch-cache:/cache/torch
+
+services:
+  tools:
+    <<: *common
+    command: ["lerobot-ros-doctor", "--skip-ros-graph", "--skip-hardware"]
+
+  gpu:
+    <<: *common
+    gpus: all
+    ipc: host
+
+  robot:
+    <<: *common
+    network_mode: host
+    ipc: host
+    # Add stable /dev/v4l/by-id and /dev/input/by-id mappings in a local
+    # compose override. Do not use privileged: true.
+
+  dev:
+    <<: *common
+    build:
+      context: .
+      target: dev
+      args:
+        APP_UID: ${UID:-1000}
+        APP_GID: ${GID:-1000}
+    volumes:
+      - .:/workspace
+      - ${LEROBOT_DATA:-./data}:/data
+      - ${LEROBOT_CONFIG:-./config.local}:/config:ro
+      - hf-cache:/cache/huggingface
+      - torch-cache:/cache/torch
+    command: ["bash"]
+
+volumes:
+  hf-cache:
+  torch-cache:

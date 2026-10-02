@@ -88,8 +88,8 @@ IMG_PREFIX = "observation.images."
 DEFAULT_PARK_LEFT = [2.255082, -1.578954, 1.338951, -1.296062, -1.514087, 0.710721, 0.0]
 DEFAULT_PARK_RIGHT = [0.100741, -2.157641, -1.363733, -1.230887, 1.560952, 0.075859, 0.332335]
 
-FFMPEG = "/bin/ffmpeg"
-FFPROBE = "/bin/ffprobe"
+FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
 
 
 # ── source inspection ────────────────────────────────────────────────────

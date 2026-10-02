@@ -1,0 +1,46 @@
+# Public release delta
+
+Extract at the repository root. This archive contains updated and new files only. Then remove paths listed in `PUBLIC_RELEASE_DELETE.txt` with `xargs -a PUBLIC_RELEASE_DELETE.txt git rm --`. Run Gitleaks against complete history before publishing.
+
+- `.dockerignore`
+- `.github/workflows/ci.yml`
+- `.gitignore`
+- `CONTRIBUTING.md`
+- `Dockerfile`
+- `LICENSE`
+- `MIGRATION.md`
+- `PUBLIC_RELEASE_DELETE.txt`
+- `README.md`
+- `SECURITY.md`
+- `compose.yaml`
+- `config/gello.yaml`
+- `config/hf_backup.yaml`
+- `constraints.txt`
+- `dependencies.env`
+- `docker/entrypoint.sh`
+- `docs/architecture.md`
+- `docs/backup.md`
+- `docs/configuration.md`
+- `docs/datasets.md`
+- `docs/deployment.md`
+- `docs/development.md`
+- `docs/docker.md`
+- `docs/getting-started.md`
+- `docs/hardware.md`
+- `docs/policy-plugins.md`
+- `docs/recording.md`
+- `docs/release-process.md`
+- `docs/training.md`
+- `docs/troubleshooting.md`
+- `environment.yml`
+- `examples/compose.override.hardware.yaml`
+- `examples/gello.yaml`
+- `examples/hf-backup.yaml`
+- `pyproject.toml`
+- `requirements.lock.txt`
+- `scripts/backup_batch.sh`
+- `scripts/backup_smrithi_batch.sh`
+- `scripts/release_check.sh`
+- `scripts/setup_obsbot_cli.sh`
+- `src/lerobot_ros2/cli/doctor.py`
+- `tests/test_doctor.py`

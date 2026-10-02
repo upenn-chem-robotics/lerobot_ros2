@@ -1,31 +1,18 @@
-# Recorded datasets and checkpoints: hundreds of GB, mount at runtime instead
-# (docker run -v /path/to/data:/lerobot-ros/data).
-data/
-outputs/
-
-# Local-only scratch, caches and logs.
-logs/
-tmp_plateau_test/
-.tmp_hf_cache/
-.pytest_cache/
-
-# Git history and any linked worktrees.
-.git/
-.worktrees/
-
-# Python build artifacts.
-__pycache__/
+.git
+.github
+.worktrees
+config.local
+data
+outputs
+logs
+third_party
+.venv
+__pycache__
 *.py[cod]
-*.egg-info/
-build/
-dist/
-.eggs/
-.venv/
-
-# Vendored OBSBOT CLI (bundles a proprietary SDK; rebuild in-image if needed).
-third_party/
-
-# Editor config.
-.vscode/
-.idea/
-.DS_Store
+*.egg-info
+.pytest_cache
+.ruff_cache
+build
+dist
+.env
+compose.hardware.yaml

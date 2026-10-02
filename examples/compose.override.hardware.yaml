@@ -1,0 +1,10 @@
+services:
+  robot:
+    devices:
+      - /dev/v4l/by-id/REPLACE_FRONT_CAMERA:/dev/v4l/by-id/REPLACE_FRONT_CAMERA
+      - /dev/v4l/by-id/REPLACE_LEFT_CAMERA:/dev/v4l/by-id/REPLACE_LEFT_CAMERA
+      - /dev/v4l/by-id/REPLACE_RIGHT_CAMERA:/dev/v4l/by-id/REPLACE_RIGHT_CAMERA
+      - /dev/input/by-id/REPLACE_FOOT_PEDAL:/dev/input/by-id/REPLACE_FOOT_PEDAL
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${INPUT_GID:-998}"

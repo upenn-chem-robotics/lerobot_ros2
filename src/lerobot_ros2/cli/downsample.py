@@ -792,7 +792,7 @@ def downsample_videos(src: Path, dst: Path, downsample: int) -> None:
                     f"scale=trunc(iw/{downsample}/2)*2:trunc(ih/{downsample}/2)*2"
                 )
             cmd = [
-                "/bin/ffmpeg",
+                "ffmpeg",
                 "-y",
                 "-loglevel",
                 "error",

@@ -39,6 +39,7 @@ all = ["lerobot-ros2[viz,pedal]"]
 dev = ["ruff==0.16.1", "pytest"]
 
 [project.scripts]
+lerobot-ros-doctor = "lerobot_ros2.cli.doctor:main"
 lerobot-ros-record = "lerobot_ros2.cli.record:main"
 lerobot-ros-deploy = "lerobot_ros2.cli.deploy:main"
 lerobot-ros-dagger = "lerobot_ros2.cli.dagger:main"

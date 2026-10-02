@@ -62,8 +62,6 @@ import pyarrow.parquet as pq
 import yaml
 from PIL import Image
 
-os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
-
 from lerobot_ros2.config_paths import resolve_config_path
 from lerobot_ros2.helper import (
     EVDEV_AVAILABLE,

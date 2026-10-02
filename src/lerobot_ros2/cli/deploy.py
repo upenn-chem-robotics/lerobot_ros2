@@ -44,8 +44,6 @@ import torch
 import yaml
 from torchvision.transforms import v2 as transforms_v2
 
-os.makedirs(os.path.join(os.path.dirname(cv2.__file__), "qt", "fonts"), exist_ok=True)
-
 # Reuse the robust homing/reset helpers from record.py so deploy homes the
 # arms the same safe way the recorder does: open grippers, skip the home
 # publish for arms already at home (republishing a zero-delta trajectory can
