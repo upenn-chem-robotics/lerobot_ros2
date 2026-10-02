@@ -3,10 +3,13 @@ ARG MINIFORGE_IMAGE=condaforge/miniforge3:26.3.2-3
 FROM ${MINIFORGE_IMAGE} AS environment
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       build-essential git ca-certificates libgl1 libglib2.0-0 v4l-utils tini \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
+RUN conda install -n base -y \
+      "setuptools>=78.1.1,<81" "urllib3>=2.8,<3" "msgpack-python>=1.2.1,<2" && \
+    conda clean -afy
 COPY environment.yml requirements.lock.txt dependencies.env ./
 RUN conda config --system --set channel_priority strict && \
     conda env create --file environment.yml && \

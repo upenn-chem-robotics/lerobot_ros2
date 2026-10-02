@@ -211,9 +211,9 @@ fi
 
 if (( RUNTIME_READY && FAILURES == 0 )); then
   if command -v trivy >/dev/null 2>&1; then
-    run 'Trivy image scan' trivy image --scanners vuln --timeout "$TRIVY_TIMEOUT" --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 "$IMAGE"
+    run 'Trivy image scan' trivy image --scanners vuln --timeout "$TRIVY_TIMEOUT" --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 --format json --output "$LOG_DIR/trivy-$STAMP.json" "$IMAGE"
   else
-    warn_run 'Trivy image scan through Docker' docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --scanners vuln --timeout "$TRIVY_TIMEOUT" --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 "$IMAGE"
+    warn_run 'Trivy image scan through Docker' docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$LOG_DIR:/reports" aquasec/trivy:latest image --scanners vuln --timeout "$TRIVY_TIMEOUT" --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 --format json --output "/reports/trivy-$STAMP.json" "$IMAGE"
   fi
   section 'Image inspection'
   docker image inspect "$IMAGE" || { printf '[FAIL] image inspection\n'; FAILURES=$((FAILURES + 1)); }

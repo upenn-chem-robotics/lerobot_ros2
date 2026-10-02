@@ -5,8 +5,9 @@ channels:
 dependencies:
   - python=3.12
   - pip
-  - setuptools>=75,<81
+  - setuptools>=78.1.1,<81
   - packaging>=24.2,<26
+  - msgpack-python>=1.2.1,<2
   - wheel
   - numpy>=2.0,<2.3
   - pandas>=2.2,<3

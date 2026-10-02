@@ -24,3 +24,4 @@ rerun-sdk==0.26.2
 termcolor==3.2.0
 # Required by the registered lerobot-ros-app console entry point.
 gradio>=5,<7
+urllib3==2.8.0
