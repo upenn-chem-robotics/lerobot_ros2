@@ -1,4 +1,11 @@
-# Reference robot integration
+# Robot integration
+
+## Choose your role
+
+- **Operator on an already commissioned system:** do not change robot networking, ToolComm, calibration, launch files, or controllers. Copy the supported profile, confirm the released runtime version with the site integrator, and start at [Validate before enabling motion](#4-validate-before-enabling-motion).
+- **Integrator commissioning the system:** complete the robot-side preparation, distinct-port setup, calibration review, and runtime launch under the site's robot-administration procedure.
+
+If you do not know which role applies, stop before making robot-side changes and ask the person responsible for the robot deployment.
 
 ## Supported reference integration
 
@@ -155,6 +162,8 @@ Other robots and sites use the generic files under `config/` rather than this pr
 
 ## 2. Prepare the robot hardware
 
+> **Commissioning integrators only.** Operators of an already commissioned system skip this section.
+
 The robot-side setup follows the same upstream procedures referenced by the `ur_robotiq` project. Complete them for both robots before starting the runtime:
 
 1. [Install and configure UR External Control](https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/doc/ur_client_library/doc/setup/robot_setup.html).
@@ -284,14 +293,30 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
 
 Do not pass `--skip-ros-graph` for this integration check.
 
-## 6. GELLO operating contract
+## 6. GELLO operating modes
 
-The normal workflow uses two modes:
+The GELLO offset node supports four control modes:
 
 - `0`: idle, with no command publishing;
-- `1`: normal offset mode for teleoperation and recording.
+- `1`: normal offset mode for teleoperation and recording;
+- `2`: positive speed mode for one selected robot joint;
+- `3`: negative speed mode for one selected robot joint.
 
-Modes `2` and `3` are robot-runtime diagnostics and are not part of normal `lerobot_ros2` operation. The profile uses the transition services exposed by the bimanual launch. Return both offset nodes to mode `0` before changing hardware, controller, calibration, gripper, or topic settings.
+Modes `2` and `3` provide sustained rotation of a selected joint. This can be useful for validated tasks that require repeated rotation, including screwing. They are specialized task modes, not diagnostic-only modes.
+
+Their behavior is configured in the robot runtime:
+
+- `speed_mode_joint_name`: joint to rotate; when empty, the last arm joint is used;
+- `speed_trigger_joint_index`: GELLO joint used as the trigger; `-1` uses the last GELLO joint;
+- `speed_max_velocity`: maximum angular speed in radians per second;
+- `mode_transition_delay_seconds`: delay applied when entering or switching active modes.
+
+The trigger scales motion from zero to `speed_max_velocity`. Mode `2` applies the positive direction and mode `3` the negative direction. Confirm the selected joint, trigger, direction, velocity, tool alignment, joint limits, workspace clearance, and emergency-stop access before entering either mode. Use a conservative site-approved velocity for the first controlled check.
+
+Return the affected offset node to mode `0` before changing the selected joint, trigger, speed, tooling, controller, calibration, gripper, or topic settings. When returning to mode `1`, the node recomputes normal-mode offsets from the latest robot and GELLO states. Use the transition service exposed by the bimanual launch after changing modes.
+
+!!! danger "Continuous single-joint motion"
+    Modes `2` and `3` continue to advance the selected joint while the trigger is applied. An incorrect joint, direction, velocity, trigger, or tool alignment can produce unintended motion. Verify the selected joint and direction at conservative speed before using either mode for a task.
 
 ## 7. Continue to recording or deployment
 
@@ -305,18 +330,51 @@ After the interface check:
 
 ## Troubleshooting
 
-### The robot runtime starts but topics are missing
+The released `lerobot_ros2` image, released robot runtime, and `ur_robotiq_bimanual` compatibility profile are intended to be used together. If names, types, or commands differ, first check the released versions. Do not patch either running container to make incompatible interfaces appear to match.
 
-Confirm that both runtimes use the same `ROS_DOMAIN_ID`, host ROS networking is available, and the robot deployment reports active controllers. Resolve missing topics in the deployed robot runtime or its reviewed configuration; do not patch the running container.
+### The robot runtime runs, but no robot state appears
 
-### Service names differ from the profile
+**What this means:** a ROS topic is a named stream of messages. The two containers may be on different ROS domains, may not share the required host network, or the robot controllers may not be active and publishing state.
 
-Stop the workflow and compare the deployed robot image with `profiles/ur_robotiq_bimanual/compatibility.yaml`. Update the runtime or submit a reviewed profile change; do not make an unrecorded local interface fork.
+**Check in order:**
 
-### One arm is associated with the wrong data
+1. Confirm that both runtimes use the same `ROS_DOMAIN_ID`; this value selects which ROS processes can discover one another.
+2. Confirm that both documented ROS paths use host networking.
+3. Run `ros2 control list_controllers` and confirm with the site integrator that the required state broadcasters are active.
+4. Compare the missing topic with `profiles/ur_robotiq_bimanual/compatibility.yaml`.
 
-Check the left/right topic mapping in `config.local/gello.yaml` and ask the robot operator to verify the deployed robot configuration. Keep robot addresses and calibration details in the robot deployment, not in this repository.
+**Continue when:** the exact expected state topics are present and update with current values.
 
-### Dataset actions jump by approximately one revolution
+!!! danger "Do not proceed"
+    Do not enable commands while required topics are absent, substituted with unfamiliar names, or publishing stale state.
 
-Review `wrap_joints`, `unwrap.max_step`, joint ordering, and the physical wrist state before recording again. Preserve the original dataset and correct the integration before collecting replacement episodes.
+### A service name or type differs from the profile
+
+A ROS service is a named request-and-response interface. A similarly named service is not automatically equivalent.
+
+**Fix:** confirm that the released robot image matches `compatibility.yaml`. If it does not, use the compatible released image. If it does but the interface still differs, stop and report the release/profile mismatch; do not add an unrecorded remapping.
+
+!!! danger "Do not proceed"
+    Do not call a service whose type or effect is not understood, especially dashboard services that can power, release brakes, load programs, or start execution.
+
+### Moving or observing one arm changes the other side's values
+
+**What this means:** the configuration assigning data to left and right may be reversed, or the selected profile may not match the robot deployment.
+
+**Check:** with command publication disabled, observe one arm at a time and compare the changing state fields with `config.local/gello.yaml`. Ask the site integrator to verify the robot-side left/right association.
+
+**Continue when:** each arm changes only its intended state fields and the action ordering matches the same association.
+
+!!! danger "Do not proceed"
+    Do not record or deploy while left/right state, action, or gripper association is ambiguous.
+
+### A smooth wrist movement creates a jump of about one revolution
+
+Rotating joints can represent the same physical angle with numbers separated by one full revolution. `wrap_joints` lists joints needing that handling; `unwrap.max_step` limits the expected change between consecutive samples.
+
+**Check:** preserve the original dataset, confirm joint ordering, identify the affected joint, review its `wrap_joints` entry, compare `unwrap.max_step` with plausible consecutive motion at `recording.hz`, and confirm that the initial controller state is current.
+
+**Continue when:** a new no-motion or test recording stays continuous and its joint meaning is verified.
+
+!!! danger "Do not proceed"
+    Do not replay, train for deployment, or replace the original data while the discontinuity remains unexplained.

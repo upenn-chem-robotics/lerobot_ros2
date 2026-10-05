@@ -1,6 +1,8 @@
-# Choose and run a workflow
+# Workflows
 
-Each workflow below states its scope, prerequisites, and command. Definitions of *episode*, *policy*, and *checkpoint* are provided in [Robot-learning fundamentals](concepts.md).
+Use the released image and matching checkout throughout a workflow. If a documented command is missing or its interface differs, first verify the release tag rather than patching the container.
+
+Each workflow below states its scope, prerequisites, and command. Definitions of *episode*, *policy*, and *checkpoint* are provided in [Concepts](concepts.md).
 
 > Replace angle-bracket placeholders before running a command. Paths beginning with `/data` refer to the host `data/` directory mounted into the container.
 
@@ -18,7 +20,7 @@ Each workflow below states its scope, prerequisites, and command. Definitions of
 | Reduce dataset frame rate | [Downsample a dataset](#downsample-a-dataset) | Software-only | Existing dataset |
 | Preserve an artifact externally | [Back up a dataset or checkpoint directory](#back-up-a-dataset-or-checkpoint-directory) | Network access | Artifact, destination configuration, and authentication |
 | Produce a policy checkpoint | [Train a policy](#train-a-policy) | GPU-required | Compatible dataset and NVIDIA runtime |
-| Run a policy on the robot | [Deploy a checkpoint](#deploy-a-checkpoint) | Robot-capable | Compatible checkpoint and completed acceptance checks |
+| Run a policy on the robot | [Deploy a validated checkpoint](#deploy-a-validated-checkpoint) | Robot-capable | Compatible checkpoint and completed acceptance checks |
 | Collect policy corrections | [Collect DAgger data](#collect-dagger-data) | Robot-capable | Deployable checkpoint and intervention interface |
 | Retrain with corrections | [Train from DAgger data](#train-from-dagger-data) | GPU-required | Compatible DAgger dataset and NVIDIA runtime |
 
@@ -33,6 +35,10 @@ docker compose run --rm tools \
 ```
 
 Run this check before dataset, learning, or hardware diagnostics so packaging and mount failures are reported separately.
+
+## Dataset workflows
+
+Use these operations only after the source has been opened and inspected. Always write to a new destination and inspect that destination before training.
 
 ## Visualize a dataset
 
@@ -90,7 +96,9 @@ Use the generated camera reports to confirm stable device identity and settings 
 
 **Scope:** robot-capable. **Requires:** cameras, operator inputs, completed hardware configuration, and controlled safety checks.
 
-After the no-motion and safety checks:
+**Recording readiness gate:** continue only when camera identities and orientation are confirmed, pedal or operator input is confirmed, left/right state association is unambiguous, both GELLO nodes have been verified in mode `0`, the destination is understood, the workspace is clear, emergency-stop access is confirmed, and one operator controls the transition.
+
+After that gate:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
@@ -103,6 +111,8 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
 Use `--left` or `--right` only for a single-arm recording. Keep partial or interrupted recordings separate until their metadata and episode finalization have been checked.
 
 ## Canonicalize a dataset
+
+**Use when:** the source fields, ordering, shapes, or conventions are understood and must be converted to the project schema. **Do not use when:** the meaning of a source field is unknown.
 
 **Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
 
@@ -118,6 +128,8 @@ Canonicalization may change field names, ordering, shapes, or conventions to mat
 
 ## Reorient camera observations
 
+**Use when:** a known camera is rotated and the required deployment orientation is known. **Do not use when:** camera identity or the affected episodes are uncertain.
+
 **Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
 
 ```bash
@@ -131,6 +143,8 @@ docker compose run --rm tools \
 Use a camera short name reported by `lerobot-ros-reorient --src /data/<source-dataset> --report`. The episode specification can be a single episode, a comma-separated list, a range, or `all`. Run `lerobot-ros-reorient --help` for the orientation operations supported by the installed release; preview the selected camera and episodes before applying one. The destination must differ from the source, and the transformed images must be checked against the orientation expected at deployment.
 
 ## Downsample a dataset
+
+**Use when:** a specific lower temporal rate is required and short events have been reviewed. **Do not use merely to reduce size without checking contacts, brief actions, and policy FPS requirements.
 
 **Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
 
@@ -158,7 +172,21 @@ Retain the local copy until the destination repository and artifact contents hav
 
 ## Train a policy
 
-**Scope:** GPU-required for the documented path. **Requires:** a compatible dataset and NVIDIA Container Toolkit.
+**Scope:** GPU-required for the documented path. **Requires:** a dataset that has passed inspection and NVIDIA Container Toolkit.
+
+Before the full run:
+
+1. Open the dataset with [Visualize a dataset](#visualize-a-dataset).
+2. Record its observation fields, action dimensions, and FPS.
+3. Confirm that the selected policy accepts that schema.
+4. Start with stock `diffusion` unless spaced observation history or previous-command history addresses a specific task requirement described in [Concepts](concepts.md#project-specific-policy-variants).
+5. Inspect the installed command before launching a long run:
+
+```bash
+docker compose run --rm gpu lerobot-ros-train --help
+```
+
+Use the released command's supported options to perform the shortest practical loading test before the full run. The loading test should reach dataset loading and model initialization and write only to a disposable output directory.
 
 ```bash
 docker compose run --rm gpu \
@@ -170,13 +198,34 @@ docker compose run --rm gpu \
   --steps=40000
 ```
 
+**Training output gate:** the dataset loads with the expected fields, the model initializes, the chosen output directory receives the run artifacts, and the saved policy can be reloaded with its recorded schema.
+
 The shown `--steps=40000` is an example run length, not evidence that the policy has converged or is deployable. Record the dataset identity, configuration, released image tag, random seed, and output checkpoint. Confirm that the saved policy reloads with the recorded observation and action schemas. Add `--push` only after the backup mapping has been reviewed.
 
-## Deploy a checkpoint
+## Validate a checkpoint without motion
 
-**Scope:** robot-capable. **Requires:** a compatible checkpoint and controlled acceptance.
+**Scope:** no-motion compatibility check. **Requires:** a saved checkpoint, its training record, and the current configuration.
 
-Deployment can command hardware. Complete all no-motion checks first:
+Before starting any robot-capable deployment command, compare:
+
+- checkpoint observation names and shapes with the configured cameras and state fields;
+- checkpoint action dimensions and ordering with the configured joints and grippers;
+- normalization metadata and action convention;
+- training FPS and history settings with the intended runtime;
+- policy type and plugins with the released image.
+
+Use the released command interfaces and the site's no-motion procedure to load the checkpoint without enabling command publication. A successful file load is only the start of this check.
+
+**Checkpoint compatibility verified:** every item above has a recorded match and the live state association has already passed the ROS no-motion checks.
+
+!!! danger "Do not proceed"
+    Do not deploy when metadata is missing, a dimension is merely assumed, camera roles differ, joint ordering is uncertain, or the checkpoint requires a policy plugin absent from the released image.
+
+## Deploy a validated checkpoint
+
+**Scope:** robot-capable. **Requires:** checkpoint compatibility verified, ROS interface verified, and physical acceptance completed.
+
+Deployment can command hardware. Immediately before running the command, confirm the recorded checkpoint-compatibility result, current controller state, joint limits, workspace clearance, emergency-stop access, and responsible operator. Then run:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \

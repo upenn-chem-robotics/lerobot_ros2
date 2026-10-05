@@ -1,4 +1,4 @@
-# Configuration reference
+# Configuration
 
 > **Scope:** Configuration files, paths, variables, mounts, devices, and secrets.
 
@@ -8,7 +8,7 @@ Keep `config/gello.example.yaml` as a reference. Copy it to `config.local/gello.
 
 | Workflow | Minimum local inputs |
 |---|---|
-| Dataset visualization or transformation | Dataset below host `data/`; no robot configuration. |
+| Dataset visualization or transformation | Dataset below host `data/`; no robot configuration or `compose.hardware.yaml`. |
 | GPU training | Dataset path and repository ID; working NVIDIA runtime. |
 | Camera probing | Camera entries plus stable mappings in `compose.hardware.yaml`. |
 | Recording | Camera, operator-input, ROS, arm, and gripper values used by the site. |
@@ -38,6 +38,15 @@ cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
 ```
 
 `profiles/ur_robotiq_bimanual/gello.yaml` is the supported lab profile. `config/gello.example.yaml` is the generic annotated template for other robots and sites. The profile records shared ROS and dataset settings; ignored local files contain machine-specific device identifiers and site details.
+
+Before replacing a device placeholder, list the stable candidates on the host:
+
+```bash
+ls -l /dev/v4l/by-id/
+ls -l /dev/input/by-id/
+```
+
+Map one physical device at a time and verify its role. The presence of a stable path does not prove that it is the intended camera or pedal. If either directory is absent or the identity is uncertain, stop and resolve the host device setup before using a hardware workflow.
 
 Replace every `REPLACE_*` value before running a hardware workflow. Never commit credentials, private datasets, participant data, robot network details, hardware inventories, or local device identifiers.
 

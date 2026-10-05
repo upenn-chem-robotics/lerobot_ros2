@@ -1,6 +1,6 @@
-# Contributor guide
+# Development
 
-> **Audience:** Contributors modifying source code or documentation. Published releases are installed as described in [Install a released version](installation.md).
+> **Audience:** Contributors modifying source code or documentation. Published releases are installed as described in [Installation](installation.md).
 
 ## Repository structure
 
@@ -12,6 +12,18 @@
 - `docs/`: public user and contributor documentation
 
 The runtime image installs wheels. Editable or source-mounted execution is reserved for the `dev` service so release behavior is tested against installed distributions. Before changing code, identify the owning command or package, reproduce the current behavior in `dev`, and determine which installed runtime image must ultimately contain the change. Do not validate only through an editable source mount when the released path uses installed wheels.
+
+## First development checkout
+
+Use a full clone rather than the sparse release checkout:
+
+```bash
+git clone https://github.com/penzottimattia/lerobot_ros2.git
+cd lerobot_ros2
+git switch -c <branch-name>
+```
+
+Before editing, build the development service and run the baseline checks. After editing, rerun the verification flow that owns the changed files.
 
 ## Development environment
 

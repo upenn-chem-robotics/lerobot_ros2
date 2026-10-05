@@ -1,5 +1,16 @@
 # Robot-learning fundamentals
 
+> **Audience:** First-time users who need the vocabulary behind datasets, policies, checkpoints, deployment, and the project-specific temporal-history methods.
+>
+> **Suggested reading:** Read through [Checkpoint](#checkpoint-a-saved-trained-policy) before your first dataset inspection. Return to dataset transformations, policy variants, and DAgger only when the corresponding workflow requires them.
+
+## Reading map
+
+- **Core vocabulary:** observation, action, demonstration, episode, dataset, policy, checkpoint, teleoperation, inference, and deployment.
+- **Data preparation:** camera probing, transformations, and metadata.
+- **Temporal policies:** observation history, diffusion, strided diffusion, and action-history diffusion.
+- **Corrective collection:** DAgger and the distinction between training, offline inspection, no-motion checks, and physical validation.
+
 This page defines the robotics and machine-learning terms used by the commands.
 
 ## Example workflow

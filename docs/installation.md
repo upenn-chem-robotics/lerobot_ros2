@@ -1,16 +1,26 @@
-# Install a released version
+# Installation
 
-> **Scope:** Installation of a published release image. Source builds, tests, documentation tooling, and release verification are covered in [Contributor guide](development.md).
+> **Scope:** Install a published release. Source development and release verification are covered in [Development](development.md).
+
+A **Docker image** is the packaged software that Docker downloads and runs. An image **tag** identifies the published project version. A Compose **service** selects how that image is run for tools, GPU work, or robot access. A **mount** makes a host directory, such as `data/`, visible inside the container.
+
+## Choose your path
+
+- **Dataset inspection or transformation:** complete [Software-only installation](#software-only-installation). Do not create robot configuration.
+- **Training:** complete the software-only steps, then [GPU addition](#gpu-addition).
+- **Camera or robot use:** complete the software-only steps, then [Hardware addition](#hardware-addition).
 
 ## Prerequisites
 
-Use Linux x86-64 with Docker Engine, Docker Compose v2, and enough storage for images, datasets, and checkpoints. NVIDIA Container Toolkit is required only for the `gpu` service.
+Use Linux x86-64 with Git, Docker Engine, Docker Compose v2, and enough storage for images, datasets, and checkpoints. NVIDIA Container Toolkit is required only for the `gpu` service.
 
-The supported runtime is containerized. Do not combine the release image with host ROS, a host Conda environment, or a native pip installation.
+The supported runtime is containerized. Do not combine the released image with host ROS, a host Conda environment, or a native pip installation.
 
-## Obtain the release files
+## Software-only installation
 
-Use a sparse checkout of the released tag to obtain the Compose file, supported profiles, generic configuration templates, documentation, license, and notices without populating the application source directories. Replace `<release-tag>` with the tag named in the release notes.
+### 1. Obtain the release files
+
+Replace `<release-tag>` with the tag shown in the release notes:
 
 ```bash
 git clone --filter=blob:none --sparse --no-checkout \
@@ -21,103 +31,112 @@ git sparse-checkout set docs config profiles
 git checkout
 ```
 
-Cone mode includes repository-root files alongside the selected directories. Files such as `compose.yaml`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` remain available, while `src/`, `tests/`, and `packages/` are not populated. The released container image supplies the installed runtime; the sparse checkout supplies the Compose files, profiles, templates, documentation, license, and notices needed to run it without presenting a source checkout as the installed application.
+This checkout supplies `compose.yaml`, documentation, profiles, templates, licenses, and notices. The application itself comes from the released image; this is not an editable source installation.
 
-## Choose a configuration path
-
-A profile is not merely a convenient set of example values. It records reviewed assumptions about ROS interfaces, camera roles, recording semantics, and the compatible robot runtime. Use the supported profile only for the documented bimanual system; use the generic templates as the starting point for a separately reviewed integration.
-
-For the lab bimanual UR3 and Robotiq system, copy the supported profile:
+### 2. Prepare local directories and select the release
 
 ```bash
-mkdir -p config.local data
-cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
-cp profiles/ur_robotiq_bimanual/compose.hardware.yaml compose.hardware.yaml
-```
-
-Replace every `REPLACE_*` device path in the copied files with the stable `/dev/v4l/by-id/` and `/dev/input/by-id/` paths for this host before using hardware.
-
-For another robot or site, start from the generic templates:
-
-```bash
-mkdir -p config.local data
-cp config/gello.example.yaml config.local/gello.yaml
-cp config/compose.hardware.example.yaml compose.hardware.yaml
-```
-
-The generic templates deliberately contain `REPLACE_*` interface placeholders. Do not mix a profile with unrelated generic topic or service defaults.
-
-## Select the released image
-
-From the sparse checkout:
-
-```bash
+mkdir -p data
 export UID="$(id -u)"
 export GID="$(id -g)"
-export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
+export LEROBOT_ROS_IMAGE="ghcr.io/penzottimattia/lerobot-ros2"
 export IMAGE_TAG="<release-tag>"
 ```
 
-Use the image reference and immutable version or commit tag supplied in the release notes. Do not use `latest` as the only identifier. Before pulling, run `docker compose config --images` and confirm that each resolved image matches the release notes.
+Use the exact tag from the same release as the checkout. Avoid `latest`, because its meaning can change.
 
-`config.local/`, `compose.hardware.yaml`, datasets, and outputs are local state. Do not commit or redistribute them with credentials, device inventories, or participant data.
+Check what Docker will run:
 
-## Pull the runtime
+```bash
+docker compose config --images
+```
 
-The Compose file exposes three user-facing services:
+**Continue when:** every displayed `lerobot-ros2` image uses the expected public image name and release tag.
 
-- `tools`: CPU visualization and dataset operations
-- `gpu`: GPU training and inference
-- `robot`: host-networked runtime extended with explicit hardware mappings
-
-Pull the service required by your workflow:
+### 3. Download and check the tools service
 
 ```bash
 docker compose pull tools
-```
-
-Run the software-only preflight:
-
-```bash
 docker compose run --rm tools \
   lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-This does not validate a dataset, checkpoint, GPU, camera, or robot.
+**Software preflight passed:** the image downloads, the doctor command exits successfully, and it does not report a failed packaged-application or mount check.
 
-For GPU or robot workflows:
+This does not validate a dataset, GPU, camera, ROS graph, checkpoint, or robot.
+
+## GPU addition
+
+Complete the software-only installation first, then download the GPU service:
 
 ```bash
 docker compose pull gpu
+```
+
+Continue with [Train a policy](workflows.md#train-a-policy). A successful tools preflight confirms the basic container path, not GPU access.
+
+## Hardware addition
+
+Complete the software-only installation first. Use this path only for cameras or the documented robot integration.
+
+For the supported lab system:
+
+```bash
+mkdir -p config.local
+cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
+cp profiles/ur_robotiq_bimanual/compose.hardware.yaml compose.hardware.yaml
 docker compose pull robot
 ```
 
-After the required images are pulled and the software-only preflight succeeds, continue with [Visualize an existing dataset](first-run.md) or [Choose and run a workflow](workflows.md).
-
-The `dev` service and local build definitions are documented in [Contributor guide](development.md) and are not part of release-image installation.
-
-## Common failures
-
-### Compose selects the wrong image
+Use this profile only for the documented two-UR3, two-Robotiq, two-GELLO integration. For another robot or site, start from the generic templates and treat the result as a separately reviewed integration:
 
 ```bash
-printf '%s:%s\n' "$LEROBOT_ROS_IMAGE" "$IMAGE_TAG"
+mkdir -p config.local
+cp config/gello.example.yaml config.local/gello.yaml
+cp config/compose.hardware.example.yaml compose.hardware.yaml
 ```
 
-The printed reference must match the release notes. Then rerun `docker compose pull <service>`.
+Do not run a hardware workflow until every `REPLACE_*` value has been resolved and checked under [Configuration](configuration.md).
 
-### Registry authentication fails
+## When installation does not work
 
-Use the authentication method documented by the registry and retry. Do not put registry tokens in `compose.yaml`, shell history, or committed files.
+Released images are public and the release checkout and image tag are intended to match. Most version and dependency problems should therefore be corrected by returning to the released path rather than repairing a running container.
 
-### Files are owned by root
+### Docker uses the wrong project version
 
-Export `UID` and `GID` before running Compose.
+**What you see:** `docker compose config --images` shows a different tag from the checked-out release, or the documented command is missing.
 
-### GPU access fails
+**Fix:** set `IMAGE_TAG` to the checkout's release tag, run `docker compose config --images` again, and pull the required service. Do not edit files inside the container.
 
-Confirm the host NVIDIA driver and NVIDIA Container Toolkit before using the `gpu` service.
+### Docker cannot download the image
 
-### Source changes
+**What you see:** `docker compose pull tools` reports that the image or tag cannot be found.
 
-Source changes require a full repository clone and the `dev` target described in [Contributor guide](development.md).
+**Check:** compare the public image name and tag with the release notes and the checked-out Git tag. Also confirm that Docker can access the network.
+
+**Fix:** correct the image name or tag and retry. If the exact released public image is unavailable, stop and report the release issue rather than substituting another image.
+
+### You cannot edit files created by Docker
+
+**What you see:** outputs exist on the host but your normal user cannot edit or delete them.
+
+**Fix:** set the host identity before running Compose:
+
+```bash
+export UID="$(id -u)"
+export GID="$(id -g)"
+```
+
+Create a new test output before changing ownership of existing datasets.
+
+### Docker cannot use the GPU
+
+**What you see:** the `gpu` service fails to start or training reports no NVIDIA GPU.
+
+**Check:** run the software-only preflight first. If it passes, the basic image and mounts work and the remaining issue is GPU access.
+
+**Fix:** verify the host NVIDIA driver and NVIDIA Container Toolkit, then retry the released `gpu` service. Do not modify the image to work around a host GPU configuration problem.
+
+### Source edits do not change the released container
+
+The released image contains an installed package and does not run from the sparse checkout. Use the full-clone `dev` workflow in [Development](development.md) for source changes.
