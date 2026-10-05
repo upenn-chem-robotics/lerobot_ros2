@@ -1,0 +1,14 @@
+profile: ur_robotiq_bimanual
+ros_distribution: humble
+robot_runtime:
+  repository: penzottimattia/ur_robotiq
+  image: ghcr.io/penzottimattia/ur_robotiq:gello
+interfaces:
+  left_state: /left_state_broadcaster/joint_states
+  right_state: /right_state_broadcaster/joint_states
+  left_action: /left_arm_controller/commands
+  right_action: /right_arm_controller/commands
+  left_control_mode: /left_gello_offset_node/set_parameters
+  right_control_mode: /right_gello_offset_node/set_parameters
+  left_transition_ready: /left_gello_offset_node/wait_for_mode_transition
+  right_transition_ready: /right_gello_offset_node/wait_for_mode_transition

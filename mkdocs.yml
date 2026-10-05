@@ -1,4 +1,4 @@
-site_name: lerobot-ros2 (independent project)
+site_name: lerobot-ros2
 site_description: Documentation for the independent lerobot-ros2 interoperability project.
 site_url: https://penzottimattia.github.io/lerobot_ros2/
 repo_name: penzottimattia/lerobot_ros2
@@ -21,16 +21,14 @@ nav:
       - Overview: index.md
       - Concepts for first-time users: concepts.md
       - Installation: installation.md
-      - Your first run: first-run.md
+      - Visualize your first dataset: first-run.md
   - Use the project:
-      - Choose a capability: capabilities.md
-      - Run a workflow: workflows.md
+      - Choose and run a workflow: workflows.md
+      - Robot integration: robot-integration.md
       - Hardware and safety: hardware-and-safety.md
       - Configuration reference: configuration.md
   - Contribute and release:
       - Development: development.md
-      - Release and validation: release-and-validation.md
-      - Legal, attribution, and independence: legal.md
 
 strict: true
 markdown_extensions:

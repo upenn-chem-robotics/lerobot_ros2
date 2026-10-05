@@ -61,3 +61,44 @@ A documentation change should include working internal links, commands that matc
 ## Contribution boundaries
 
 Do not commit local configuration, data, outputs, logs, checkpoints, tokens, robot addresses, private inventories, or participant information. Use sanitized examples and keep site-specific material under ignored paths.
+
+## Quick verification flows
+
+Run the smallest flow that covers your change before opening a pull request. These checks are developer feedback loops, not substitutes for controlled hardware testing when a change touches cameras, operator inputs, controllers, or robot motion.
+
+### Documentation-only change
+
+```bash
+python -m mkdocs build --strict
+```
+
+This catches broken navigation, invalid Markdown configuration, and unresolved documentation links.
+
+### Python or CLI change
+
+```bash
+docker compose run --rm dev ruff check .
+docker compose run --rm dev pytest
+```
+
+Use this for application logic, command-line interfaces, configuration parsing, and unit-tested dataset operations.
+
+### Container or dependency change
+
+```bash
+bash scripts/test_no_hardware.sh
+```
+
+This builds the runtime and development images, runs `pip check`, runs the ROS doctor report, and executes the repository's no-hardware integration selection. To reuse images that were already built with the script's expected tags, set `SKIP_BUILD=1`.
+
+### Public bundle or image change
+
+```bash
+bash scripts/verify_public_release.sh
+```
+
+Use this when changing the Dockerfile, Compose files, packaging metadata, release bundle contents, entrypoint, dependency locks, or published-image behavior. Review the generated logs and resolve every failure before publishing.
+
+### Hardware-facing change
+
+First run the Python/CLI and container flows above. Then follow [Hardware and safety](hardware-and-safety.md) in a controlled workspace. Verify configuration and observation interfaces without motion before enabling commands, and repeat the relevant camera, operator-input, limit, emergency-stop, and shutdown checks after changes to controllers, firmware, calibration, networking, checkpoints, or safety configuration.

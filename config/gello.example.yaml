@@ -1,31 +1,31 @@
 arms:
   left:
-    action_topic: "/left_arm_controller/commands"
-    state_topic: "/left_state_broadcaster/joint_states"
+    action_topic: "/REPLACE_LEFT_ACTION_TOPIC"
+    state_topic: "/REPLACE_LEFT_STATE_TOPIC"
   right:
-    action_topic: "/right_arm_controller/commands"
-    state_topic: "/right_state_broadcaster/joint_states"
+    action_topic: "/REPLACE_RIGHT_ACTION_TOPIC"
+    state_topic: "/REPLACE_RIGHT_STATE_TOPIC"
 
 services:
   control_mode:
-    - "/left_gello_offset_node/set_parameters"
-    - "/right_gello_offset_node/set_parameters"
+    - "/REPLACE_LEFT_CONTROL_MODE_SERVICE"
+    - "/REPLACE_RIGHT_CONTROL_MODE_SERVICE"
   # Optional empty services that return only once Gello has resumed publishing
   # after a mode transition has been requested.
   # If omitted, record.py derives them from control_mode by replacing
   # "/set_parameters" with "/transition_ready".
   transition_ready:
-    - "/left_gello_offset_node/wait_for_mode_transition"
-    - "/right_gello_offset_node/wait_for_mode_transition"
+    - "/REPLACE_LEFT_TRANSITION_SERVICE"
+    - "/REPLACE_RIGHT_TRANSITION_SERVICE"
 
 # In ROTATE_CW / ROTATE_CCW mode (foot pedal RIGHT / keyboard 'm'), only this
 # arm rotates wrist_3 via its Gello gripper. Every other arm is frozen in place
 # (holds ALL joints, including wrist_3) for the duration of the rotation, then
 # resumes NORMAL Gello follow as soon as the mode cycles back to NORMAL. The
 # name is matched against each control_mode service path above, so "left"
-# selects "/left_gello_offset_node/set_parameters". Set to null (or remove this
+# selects "/REPLACE_LEFT_CONTROL_MODE_SERVICE". Set to null (or remove this
 # key) to rotate every arm together — the legacy behaviour.
-rotation_arm: right
+rotation_arm: REPLACE_ROTATION_ARM
 
 # Which arm follows Gello during each subtask of a long-horizon episode, in
 # order (index 0 is the first subtask). Only consulted when record.py runs with

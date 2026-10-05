@@ -7,16 +7,16 @@ arms:
     state_topic: /right_state_broadcaster/joint_states
 services:
   control_mode:
-  - /left_gello_offset_node/set_parameters
-  - /right_gello_offset_node/set_parameters
+    - /left_gello_offset_node/set_parameters
+    - /right_gello_offset_node/set_parameters
   transition_ready:
-  - /left_gello_offset_node/wait_for_mode_transition
-  - /right_gello_offset_node/wait_for_mode_transition
+    - /left_gello_offset_node/wait_for_mode_transition
+    - /right_gello_offset_node/wait_for_mode_transition
 rotation_arm: right
 subtask_arms: []
 use_reset_client: false
 wrap_joints:
-- wrist_3_joint
+  - wrist_3_joint
 unwrap:
   max_step: 1.5708
   waypoint_stamp_s: 1.0
@@ -47,14 +47,14 @@ camera_defaults:
     tilt_speed: 0
 left_cameras:
   left_wrist_top:
-    port: /dev/v4l/by-id/REPLACE_RIGHT_CAMERA
+    port: /dev/v4l/by-id/REPLACE_LEFT_WRIST_CAMERA
     settings:
       focus_automatic_continuous: 0
       zoom_absolute: 0
       focus_absolute: 100
 right_cameras:
   right_wrist_top:
-    port: /dev/v4l/by-id/REPLACE_LEFT_CAMERA
+    port: /dev/v4l/by-id/REPLACE_RIGHT_WRIST_CAMERA
     settings:
       focus_automatic_continuous: 0
       zoom_absolute: 0

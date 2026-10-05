@@ -1,99 +1,34 @@
-# Your first run
+# Visualize your first dataset
 
-> **Page scope:** This is the normal-user onboarding path for a published image. It deliberately avoids source builds, tests, linting, security scans, and release verification.
+> **Scope:** This tutorial starts from an existing LeRobot dataset. It is software-only and does not access cameras or command a robot. If you do not have a dataset, follow the recording path on [Start here](index.md#i-am-new-and-do-not-have-a-dataset).
 
-This tutorial starts from an unpacked release bundle and ends with a successful software-only diagnostic. It does not command a robot.
+## Prerequisites
 
-## 1. Check Docker
+You need the installed release image and an existing LeRobot dataset below the host `data/` directory. No Hugging Face authentication is required unless the dataset must first be downloaded from a private or gated repository. For example, host `data/pick_place` appears in the container as `/data/pick_place`.
 
-```bash
-docker --version
-docker compose version
-```
-
-Both commands must succeed. NVIDIA Container Toolkit is not needed for this first run.
-
-## 2. Prepare local state
+## 1. Run the software-only preflight
 
 ```bash
-mkdir -p config.local data
-cp examples/gello.yaml config.local/gello.yaml
-export UID="$(id -u)"
-export GID="$(id -g)"
-```
-
-The copied YAML is only a starting template. Do not connect hardware while placeholder values remain.
-
-## 3. Select and pull the release image
-
-Use the image reference and immutable tag supplied with the release:
-
-```bash
-export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
-export IMAGE_TAG="<release-tag>"
 docker compose pull tools
+docker compose run --rm tools \
+  lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-**Expected result:** Compose downloads the published image rather than compiling project source.
+This checks the packaged application and local mounts. It does not validate the dataset itself.
 
-## 4. Run the software-only diagnostic
+## 2. Open the dataset
 
 ```bash
-docker compose run --rm tools
+docker compose run --rm --service-ports tools \
+  lerobot-ros-app --dataset_dir /data/pick_place --port 7860
 ```
 
-The default command runs `lerobot-ros-doctor` with hardware and ROS-graph probing disabled.
+Replace `/data/pick_place` with your path below `/data`, then open `http://localhost:7860` on the same workstation.
 
-**Expected result:** configuration, imports, installed distributions, and the data directory pass their checks.
+## 3. Inspect before processing or training
 
-If it fails, retain the first meaningful error. Check the image reference, registry access, Docker permissions, disk space, and local directory ownership before changing project code.
+Check that episodes and frames load; camera identity and orientation are correct; timestamps and task boundaries are plausible; observations and actions have the expected dimensions; and partial episodes are identified. Keep the source unchanged and write repairs or transformations to a new destination.
 
-## 5. Inspect available commands
+## Stop before hardware
 
-```bash
-docker compose run --rm tools lerobot-ros-doctor --help
-docker compose run --rm tools lerobot-ros-app --help
-```
-
-The normal installation is complete. Choose a task in [Workflows](workflows.md).
-
-## 6. Stop before hardware
-
-Before any physical workflow:
-
-1. Read [Hardware and safety](hardware-and-safety.md).
-2. Replace every `REPLACE_*` value.
-3. Create `compose.hardware.yaml` from the supplied example.
-4. Use stable `/dev/v4l/by-id` and `/dev/input/by-id` paths.
-5. Verify workspace clearance, limits, and emergency-stop access.
-6. Pull the same released tag for `robot` and run the full preflight without enabling actuation.
-
-```bash
-docker compose pull robot
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
-  lerobot-ros-doctor
-```
-
-Do not continue if a required check fails, a device path is ambiguous, the expected ROS graph differs, limits are unverified, or the emergency stop is unavailable.
-
-## Advanced paths
-
-To modify source, build images, run tests or linting, or edit documentation, use [Development](development.md). To qualify an artifact for publication, use [Release and validation](release-and-validation.md). Neither path is part of normal onboarding.
-
-## Troubleshooting
-
-### Compose builds instead of pulling
-
-Run `docker compose pull <service>` before `docker compose run`. Confirm `LEROBOT_ROS_IMAGE` and `IMAGE_TAG` identify a published artifact.
-
-### Docker permission denied
-
-Confirm your account can run `docker info`. Follow your organization's Docker access policy instead of running the whole workflow as `root`.
-
-### Configuration contains placeholders
-
-```bash
-grep -R "REPLACE_" config.local compose.hardware.yaml 2>/dev/null
-```
-
-Replace every result before hardware use.
+Before camera probing, recording, deployment, or DAgger, read [Hardware and safety](hardware-and-safety.md), replace every `REPLACE_*` value, create `compose.hardware.yaml`, and complete the no-motion checks.

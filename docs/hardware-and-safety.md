@@ -50,3 +50,26 @@ For each supported setup, record:
 - orderly shutdown
 
 Hardware acceptance is not covered by the automated hardware-free suite. Repeat acceptance after changing controllers, firmware, devices, calibration, networking, policy checkpoints, or safety configuration.
+
+## Controlled bimanual bring-up
+
+Complete these checks for the `ur_robotiq` stack before recording, deployment, or DAgger:
+
+1. Start with `mode:=full_mock` and verify the interface contract in [Robot integration](robot-integration.md).
+2. Confirm the left and right robot IP assignments at the site without committing them.
+3. Confirm that left and right UR custom ports differ.
+4. Confirm that left and right ToolComm TCP ports differ.
+5. Confirm the selected calibration files and robot base poses.
+6. Keep `run_setup_node:=false` during the first real-hardware graph check. The setup node can operate dashboard services, including power, brake, program-load, and play operations.
+7. Keep both GELLO offset nodes in `control_mode=0` while inspecting state topics and controller status.
+8. Confirm that the left state topic follows only the left arm and the right state topic follows only the right arm.
+9. Confirm controller and hardware-component state with `ros2 control list_controllers` and `ros2 control list_hardware_components`.
+10. Clear the workspace, verify limits and emergency-stop access, and appoint one operator to control the transition.
+11. Enter `control_mode=1`, wait for both transition services, and observe the first commanded motion at a conservative site-approved condition.
+12. Return both offset nodes to mode `0` before changing GELLO, controller, calibration, gripper, or topic parameters.
+
+Speed modes `2` and `3` are robot diagnostics and are not part of the normal recording or deployment path.
+
+## Robot-stack shutdown
+
+Return both GELLO offset nodes to idle before stopping containers. Finalize dataset or deployment outputs, stop `lerobot_ros2`, stop the robot launch, and follow the site's robot program, brake, and power procedure. A container exit is not a substitute for a verified physical stop.

@@ -1,100 +1,222 @@
-# Workflows
+# Choose and run a workflow
 
-> **Page scope:** This page owns command-oriented procedures. If you are still deciding what operation you need, start with [Choose a capability](capabilities.md).
+Use this page to select an operation, confirm its prerequisites, and run the corresponding command. If terms such as *episode*, *policy*, or *checkpoint* are unfamiliar, begin with [Concepts](concepts.md).
 
-All commands below run inside the released containers. Start by inspecting the installed parser because flags are versioned with the command:
+> Replace angle-bracket placeholders before running a command. Paths beginning with `/data` refer to the host `data/` directory mounted into the container.
 
-```bash
-docker compose run --rm tools lerobot-ros-export --help
-```
+## Quick chooser
 
-## Diagnose the runtime
+| Goal | Workflow | Scope | Required input |
+|---|---|---|---|
+| Check the installed application | [Run the software-only preflight](#run-the-software-only-preflight) | Software-only | Pulled `tools` image |
+| Inspect a dataset | [Visualize a dataset](#visualize-a-dataset) | Software-only | Existing LeRobot dataset |
+| Create videos or timeline images | [Export dataset media](#export-dataset-media) | Software-only | Existing dataset |
+| Confirm camera identities | [Probe configured cameras](#probe-configured-cameras) | Camera access | Camera configuration and hardware mappings |
+| Collect demonstrations | [Record demonstrations](#record-demonstrations) | Robot-capable | Configured cameras, operator input, and robot interface |
+| Normalize dataset structure | [Canonicalize a dataset](#canonicalize-a-dataset) | Software-only | Existing dataset |
+| Correct camera orientation | [Reorient camera observations](#reorient-camera-observations) | Software-only | Existing dataset |
+| Reduce dataset frame rate | [Downsample a dataset](#downsample-a-dataset) | Software-only | Existing dataset |
+| Preserve an artifact externally | [Back up a dataset or checkpoint directory](#back-up-a-dataset-or-checkpoint-directory) | Network access | Artifact, destination configuration, and authentication |
+| Produce a policy checkpoint | [Train a policy](#train-a-policy) | GPU-required | Compatible dataset and NVIDIA runtime |
+| Run a policy on the robot | [Deploy a checkpoint](#deploy-a-checkpoint) | Robot-capable | Compatible checkpoint and completed acceptance checks |
+| Collect policy corrections | [Collect DAgger data](#collect-dagger-data) | Robot-capable | Deployable checkpoint and intervention interface |
+| Retrain with corrections | [Train from DAgger data](#train-from-dagger-data) | GPU-required | Compatible DAgger dataset and NVIDIA runtime |
 
-```bash
-docker compose run --rm tools   lerobot-ros-doctor --skip-hardware --skip-ros-graph
-```
+The commands are independent building blocks. An experiment does not need to use every workflow or follow the table from top to bottom.
 
-With the hardware override configured, run the full preflight before any motion:
+## Run the software-only preflight
 
-```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-doctor
-```
-
-## Probe cameras
-
-Use the camera probe before writing camera identifiers into local configuration:
-
-```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-probe-cameras --help
-```
-
-Record stable `/dev/v4l/by-id` paths, not transient `/dev/videoN` numbers.
-
-## Record a dataset
+**Scope:** software-only. **Requires:** the published `tools` image and local mounts. **Produces:** a runtime and configuration report; it does not validate a dataset, checkpoint, GPU, camera, ROS graph, or robot.
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-record --help
+docker compose pull tools
+docker compose run --rm tools \
+  lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-Before recording, validate camera streams, operator input, ROS topics, the destination under `/data`, free space, and the no-motion state. After recording, allow the process to finalize files before stopping containers or powering down hardware.
+Use this to separate packaging or configuration failures from later dataset, learning, or hardware problems.
 
-## Inspect and transform datasets
+## Visualize a dataset
 
-The release provides separate commands so each transformation can be run and reviewed independently:
+**Scope:** software-only. **Requires:** an existing dataset below `/data`.
 
 ```bash
-docker compose run --rm tools lerobot-ros-canonicalize --help
-docker compose run --rm tools lerobot-ros-reorient --help
-docker compose run --rm tools lerobot-ros-downsample --help
-docker compose run --rm tools lerobot-ros-export --help
+docker compose run --rm --service-ports tools \
+  lerobot-ros-app \
+  --dataset_dir /data/<dataset> \
+  --port 7860
 ```
 
-Use a new output location for destructive or lossy transformations. Validate episode counts, timestamps, frame rate, observation keys, action dimensions, camera orientation, and metadata before replacing a source dataset.
+Open `http://localhost:7860` on the same workstation. Do not use `--share` on an untrusted network.
 
-## Back up datasets
+## Export dataset media
+
+**Scope:** software-only. **Requires:** an existing dataset below `/data`.
 
 ```bash
-docker compose run --rm tools lerobot-ros-backup --help
+docker compose run --rm tools \
+  lerobot-ros-export \
+  --dataset-dir /data/<dataset> \
+  --output-dir /data/<dataset>/exports/grid_media
 ```
 
-Keep authentication outside committed files. Verify the destination repository and dataset identity before upload, and retain a local copy until the remote artifact has been checked.
+This writes grid videos and timeline images without replacing the source dataset.
+
+## Start and verify the robot stack
+
+**Scope:** robot-capable. **Requires:** the Humble `ur_robotiq` environment, site robot configuration, and the safety checklist.
+
+The released robot runtime must be running before camera-enabled recording, deployment, or DAgger. Verify the state topics, command topics, GELLO services, controller state, and shared `ROS_DOMAIN_ID` before using the deployed hardware.
+
+Follow [Bimanual UR3 and Robotiq integration](robot-integration.md) for the supported launch commands and interface checks. Do not treat `lerobot-ros-doctor --skip-ros-graph` as a robot integration check.
+
+> **STOP: hardware boundary**
+> The next workflows can access cameras or command a robot. Read [Hardware and safety](hardware-and-safety.md), replace every `REPLACE_*` value, review `compose.hardware.yaml`, verify stable device paths, complete no-motion checks, clear the workspace, and confirm emergency-stop access.
+
+## Probe configured cameras
+
+**Scope:** camera access. **Requires:** completed local configuration and hardware override.
+
+Complete `config.local/gello.yaml` and `compose.hardware.yaml` first, then run:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-probe-cameras \
+  --config /config/gello.yaml \
+  --output-dir /data/camera_probes
+```
+
+Use the generated camera reports to confirm stable device identity and settings before recording.
+
+## Record demonstrations
+
+**Scope:** robot-capable. **Requires:** cameras, operator inputs, completed hardware configuration, and controlled safety checks.
+
+After the no-motion and safety checks:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-record \
+  --name <dataset-name> \
+  --task "<task description>" \
+  --config /config/gello.yaml
+```
+
+Use `--left` or `--right` only for a single-arm recording. Keep partial or interrupted recordings separate until their metadata and episode finalization have been checked.
+
+## Canonicalize a dataset
+
+**Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
+
+Write to a new destination:
+
+```bash
+docker compose run --rm tools \
+  lerobot-ros-canonicalize \
+  --src /data/<source-dataset> \
+  --dst /data/<canonical-dataset> \
+  --task-name "<task description>"
+```
+
+Do not point `--dst` at the source dataset.
+
+## Reorient camera observations
+
+**Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
+
+```bash
+docker compose run --rm tools \
+  lerobot-ros-reorient \
+  --src /data/<dataset>
+```
+
+This command operates from the dataset metadata and configured orientation logic. Preserve a backup before any in-place-derived transformation.
+
+## Downsample a dataset
+
+**Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
+
+```bash
+docker compose run --rm tools \
+  lerobot-ros-downsample \
+  --src /data/<source-dataset> \
+  --dst /data/<downsampled-dataset>
+```
+
+Keep the source unchanged until the destination has been inspected.
+
+## Back up a dataset or checkpoint directory
+
+**Scope:** network access. **Requires:** an artifact, destination configuration, and external authentication.
+
+Configure `config.local/hf-backup.yaml`, authenticate outside committed files, then run:
+
+```bash
+docker compose run --rm tools \
+  lerobot-ros-backup /data/<dataset-or-checkpoint-directory>
+```
+
+Retain the local copy until the destination repository and artifact contents have been checked.
 
 ## Train a policy
 
+**Scope:** GPU-required for the documented path. **Requires:** a compatible dataset and NVIDIA Container Toolkit.
+
 ```bash
-docker compose run --rm gpu lerobot-ros-train --help
+docker compose run --rm gpu \
+  lerobot-ros-train \
+  --dataset.repo_id=local/<dataset-name> \
+  --dataset.root=/data/<dataset> \
+  --policy.type=diffusion \
+  --output_dir=/data/<experiment>/deploy/<run-name> \
+  --steps=40000
 ```
 
-The repository includes two policy plugins:
-
-- `strided_diffusion`: uniformly spaced observation history; configure `DATASET_FPS` and `STRIDE_SECONDS`; predicted actions remain contiguous.
-- `action_history_diffusion`: conditions on prior commanded actions through an MLP; `n_action_history=0` matches the stock DiffusionPolicy conditioning path, while dropout is available to reduce dependence on action history.
-
-Record the dataset identity, configuration, code commit, dependency pins, random seed, and output checkpoint for every training run.
+Record the dataset identity, configuration, released image tag, random seed, and output checkpoint. Add `--push` only after the backup mapping has been reviewed.
 
 ## Deploy a checkpoint
 
+**Scope:** robot-capable. **Requires:** a compatible checkpoint and controlled acceptance.
+
+Deployment can command hardware. Complete all no-motion checks first:
+
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-deploy --help
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-deploy \
+  --policy /data/<experiment>/deploy/<run-name>/checkpoints/last/pretrained_model \
+  --config /config/gello.yaml \
+  --output-dir /data/<experiment>/deployments
 ```
 
-Deployment crosses the observation-to-command boundary. Load and inspect the checkpoint without motion first. Confirm observation names and shapes, action dimensions, normalization metadata, control frequency, limits, emergency stop, and workspace clearance before enabling commands.
+Before enabling commands, confirm observation names and shapes, action dimensions, normalization metadata, control frequency, joint limits, workspace clearance, and emergency-stop access.
 
-## DAgger
+## Collect DAgger data
 
-The repository separates collection/deployment and training commands:
+**Scope:** robot-capable. **Requires:** a deployable checkpoint, intervention interface, and controlled acceptance.
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-dagger --help
-docker compose run --rm gpu lerobot-ros-train-dagger --help
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-dagger \
+  --name <dagger-dataset-name> \
+  --task "<task description>" \
+  --policy /data/<experiment>/deploy/<run-name>/checkpoints/last/pretrained_model \
+  --config /config/gello.yaml
 ```
 
 Treat every DAgger iteration as a new dataset and checkpoint lineage. Preserve the policy version, intervention source, episode metadata, and validation outcome.
 
-## Visualization
+## Train from DAgger data
+
+**Scope:** GPU-required for the documented path. **Requires:** a compatible DAgger dataset and NVIDIA Container Toolkit.
 
 ```bash
-docker compose run --rm tools lerobot-ros-app --help
+docker compose run --rm gpu \
+  lerobot-ros-train-dagger \
+  --dataset.repo_id=local/<dagger-dataset-name> \
+  --dataset.root=/data/<dagger-dataset> \
+  --policy.type=diffusion \
+  --output_dir=/data/<experiment>/deploy/<dagger-run-name> \
+  --steps=40000
 ```
 
-The visualization application depends on the visualization extras included in the release image. Do not expose the application on an untrusted network or place credentials in its arguments.
+The exact policy configuration must match the dataset schema and the intended deployment interface.

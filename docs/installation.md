@@ -1,6 +1,6 @@
 # Installation
 
-> **Page scope:** This page installs a published release image for normal use. Source builds, editable mounts, tests, and documentation tooling belong in [Development](development.md). Release qualification belongs in [Release and validation](release-and-validation.md).
+> **Page scope:** This page installs a published release image for normal use. Source builds, tests, and documentation tooling belong in [Development](development.md). Release verification belongs in [Development](development.md#quick-verification-flows).
 
 ## Prerequisites
 
@@ -8,17 +8,43 @@ Use Linux x86-64 with Docker Engine, Docker Compose v2, and enough storage for i
 
 The supported runtime is containerized. Do not combine the release image with host ROS, a host Conda environment, or a native pip installation.
 
-## Obtain the release bundle
+## Obtain the release files
 
-Download and unpack the release bundle published with the image. It should contain at least `compose.yaml`, `examples/`, and the user documentation. A source checkout is not required for normal use. If only a source archive is published, use it as the Compose and configuration bundle without building it during onboarding.
+Use a sparse checkout of the released tag so normal users receive the Compose file, supported profiles, generic configuration templates, documentation, license, and notices without populating the application source directories. Replace `<release-tag>` with the tag named in the release notes.
 
-## Select the released image
+```bash
+git clone --filter=blob:none --sparse --no-checkout \
+  --branch <release-tag> --single-branch \
+  https://github.com/penzottimattia/lerobot_ros2.git lerobot-ros2
+cd lerobot-ros2
+git sparse-checkout set docs config profiles
+git checkout
+```
 
-From the unpacked release directory:
+Cone mode includes repository-root files alongside the selected directories. Files such as `compose.yaml`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` remain available, while `src/`, `tests/`, and `packages/` are not populated.
+
+## Choose a configuration path
+
+For the lab bimanual UR3 and Robotiq system, copy the supported profile:
+
+```bash
+```
+
+For another robot or site, start from the generic templates:
 
 ```bash
 mkdir -p config.local data
-cp examples/gello.yaml config.local/gello.yaml
+cp config/gello.example.yaml config.local/gello.yaml
+cp config/compose.hardware.example.yaml compose.hardware.yaml
+```
+
+The generic templates deliberately contain `REPLACE_*` interface placeholders. Do not mix a profile with unrelated generic topic or service defaults.
+
+## Select the released image
+
+From the sparse checkout:
+
+```bash
 export UID="$(id -u)"
 export GID="$(id -g)"
 export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
@@ -33,38 +59,35 @@ Use the image reference and immutable version or commit tag supplied in the rele
 
 The Compose file exposes three user-facing services:
 
-- `tools`: CPU diagnostics, visualization, and dataset operations
+- `tools`: CPU visualization and dataset operations
 - `gpu`: GPU training and inference
 - `robot`: host-networked runtime extended with explicit hardware mappings
 
-Pull only what the current workflow needs:
+Pull the service required by your workflow:
 
 ```bash
 docker compose pull tools
 ```
 
-Later, as required:
+Run the software-only preflight:
+
+```bash
+docker compose run --rm tools \
+  lerobot-ros-doctor --skip-hardware --skip-ros-graph
+```
+
+This does not validate a dataset, checkpoint, GPU, camera, or robot.
+
+For GPU or robot workflows:
 
 ```bash
 docker compose pull gpu
 docker compose pull robot
 ```
 
+A successful pull completes installation. There is no required diagnostic command afterward. Continue with [Your first run](first-run.md) or go directly to [Workflows](workflows.md).
+
 The Compose file also contains a `dev` service and local build definitions. They are for contributors and maintainers, not required installation steps.
-
-## Verify the runtime
-
-```bash
-docker compose run --rm tools
-```
-
-The default command checks configuration, imports, installed distributions, and the data directory while skipping hardware and ROS-graph probing. To inspect options:
-
-```bash
-docker compose run --rm tools lerobot-ros-doctor --help
-```
-
-Continue with [Your first run](first-run.md). Repository-wide validation is not part of normal installation.
 
 ## Common failures
 
@@ -74,7 +97,7 @@ Continue with [Your first run](first-run.md). Repository-wide validation is not 
 printf '%s:%s\n' "$LEROBOT_ROS_IMAGE" "$IMAGE_TAG"
 ```
 
-The printed reference must match the release notes. Then rerun `docker compose pull tools`.
+The printed reference must match the release notes. Then rerun `docker compose pull <service>`.
 
 ### Registry authentication fails
 
@@ -86,7 +109,7 @@ Export `UID` and `GID` before running Compose.
 
 ### GPU access fails
 
-Confirm the CPU-only `tools` service works first. GPU workflows additionally require a working host NVIDIA driver and NVIDIA Container Toolkit.
+Confirm the host NVIDIA driver and NVIDIA Container Toolkit before using the `gpu` service.
 
 ### You need to modify code
 

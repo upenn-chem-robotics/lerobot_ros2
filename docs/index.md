@@ -1,55 +1,47 @@
-# LeRobot ROS 2
+# Start here
 
-`lerobot_ros2` connects the main stages of a robot-learning experiment: identify sensors, control the robot, record examples, prepare datasets, train a policy, validate a checkpoint, deploy it, and collect corrective data.
+`lerobot_ros2` connects the stages of a robot-learning experiment: inspect sensors, record demonstrations, prepare data, train a policy, validate a checkpoint, deploy it, and collect corrective data.
 
 !!! important "Independent project"
-    This repository and its documentation are not affiliated with, endorsed by, sponsored by, or officially connected with Hugging Face or the LeRobot project. LeRobot and Hugging Face are names used to identify upstream projects and services with which this software interoperates.
+    This project is not affiliated with, endorsed by, sponsored by, or officially connected with Hugging Face or the LeRobot project.
 
 !!! warning "Physical safety"
-    This software can command real robots. It is not safety-rated and provides no real-time guarantee. Validate topics, services, limits, workspace clearance, emergency stops, and checkpoints without motion before enabling actuation.
+    This software can command real robots. It is not safety-rated and provides no real-time guarantee. Follow [Hardware and safety](hardware-and-safety.md) before enabling cameras or actuation.
 
-## Recommended path
+## Choose your path
 
-Follow this sequence if this is your first time in the repository:
+### I am new and do not have a dataset
 
-1. [Concepts for first-time users](concepts.md) explains the terminology and learning loop.
-2. [Installation](installation.md) pulls the published runtime image and prepares local state.
-3. [Your first run](first-run.md) walks through one safe, software-only diagnostic.
-4. [Choose a capability](capabilities.md) helps you select the right operation.
-5. [Run a workflow](workflows.md) provides the command-oriented procedures.
-6. [Hardware and safety](hardware-and-safety.md) is required reading before physical actuation.
-7. [Configuration reference](configuration.md) documents local files, mounts, variables, devices, and secrets.
+1. Read [Concepts](concepts.md).
+2. Complete [Installation](installation.md) and its software-only preflight.
+3. Copy and verify the released robot runtime profile with [Robot integration](robot-integration.md).
+4. Read [Hardware and safety](hardware-and-safety.md).
+5. Make the [minimum required configuration edits](configuration.md#minimum-required-edits).
+6. [Record demonstrations](workflows.md#record-demonstrations).
+7. Inspect the result with [Visualize your first dataset](first-run.md).
 
-Normal users stop at the task documentation. Contributors and advanced users continue with [Development](development.md); maintainers use [Release and validation](release-and-validation.md).
+Recording is a hardware workflow. There is no bundled starter dataset and onboarding does not pretend that one exists.
 
-## Page responsibilities
+### I already have a LeRobot dataset
 
-- **Concepts** defines terms and explains why the major operations exist.
-- **Installation** owns prerequisites, published-image selection, pulling, and runtime verification.
-- **Your first run** is a linear tutorial. It links out instead of becoming a second reference manual.
-- **Choose a capability** maps goals to tools and containers.
-- **Run a workflow** owns operational commands.
-- **Hardware and safety** owns controlled bring-up and acceptance checks.
-- **Configuration reference** owns settings and local overrides.
-- **Development** and **Release and validation** serve maintainers.
+1. Complete [Installation](installation.md).
+2. Put the dataset below the host `data/` directory.
+3. Follow [Visualize your first dataset](first-run.md).
+4. Continue to [Choose and run a workflow](workflows.md).
 
-## The basic learning loop
+### I want to train or deploy
 
-```mermaid
-flowchart LR
-    A[Human performs task] --> B[Record observations and actions]
-    B --> C[Train policy]
-    C --> D[Validate]
-    D --> E[Deploy carefully]
-```
+Use [Choose and run a workflow](workflows.md) to select the task, confirm its prerequisites, and run the command. Training requires a compatible dataset; the documented GPU path requires NVIDIA Container Toolkit. Deployment additionally requires a compatible checkpoint, completed hardware configuration, the verified [robot interface](robot-integration.md), and controlled no-motion checks.
 
-A **policy** is the learned component that receives observations, such as images and robot state, and produces actions. It is trained from recorded examples. It is not a fixed script, and a completed training run is not evidence that deployment is safe.
 
-## Supported release path
+### I want to change code or publish a release
 
-- Linux x86-64 with Docker Engine and Compose v2
+Use [Development](development.md), including its quick verification flows. This page is not part of normal-user onboarding.
+
+## Supported platform
+
+- Linux x86-64, Docker Engine, and Compose v2
 - Optional NVIDIA Container Toolkit for GPU training and inference
-- Stable `/dev/v4l/by-id` and `/dev/input/by-id` mappings for hardware
-- Wheel-installed runtime images and a source-mounted development image
+- Explicit `/dev/v4l/by-id` and `/dev/input/by-id` mappings for hardware
 
 macOS, Windows, Docker Desktop USB forwarding, host ROS integration, and arbitrary camera firmware are best-effort and outside the supported contract.

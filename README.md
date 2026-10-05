@@ -19,39 +19,40 @@ macOS, Windows, Docker Desktop USB forwarding, host ROS integration, and arbitra
 
 ## Quick start
 
-The supported user path consumes a published image. Obtain the small release bundle containing `compose.yaml`, `examples/`, and the documentation, then select the released image and tag:
+Check out the user-facing files from the released tag without materializing the source tree. Replace `<release-tag>` with the tag named in the release notes.
 
 ```bash
+git clone --filter=blob:none --sparse --no-checkout \
+  --branch <release-tag> --single-branch \
+  https://github.com/penzottimattia/lerobot_ros2.git lerobot-ros2
 cd lerobot-ros2
+git sparse-checkout set docs config profiles
+git checkout
+
 mkdir -p config.local data
-cp examples/gello.yaml config.local/gello.yaml
+cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
+cp profiles/ur_robotiq_bimanual/compose.hardware.yaml compose.hardware.yaml
 export UID="$(id -u)" GID="$(id -g)"
 export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
 export IMAGE_TAG="<release-tag>"
 docker compose pull tools
-docker compose run --rm tools
+docker compose run --rm tools \
+  lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-This is a software-only diagnostic. It does not probe hardware or enable actuation. Before using hardware, replace every `REPLACE_*` value, create `compose.hardware.yaml` from the example, and follow the safety checks in the documentation.
+Cone-mode sparse checkout includes the selected profile and template directories and repository-root files such as `compose.yaml`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. Application source directories are not populated. The image coordinates still come from the release notes.
 
-Building from source is intentionally not part of onboarding. Contributors and advanced users should clone the repository and follow [Development](docs/development.md). Maintainers should use [Release and validation](docs/release-and-validation.md).
+The final command is a **software-only preflight**. It checks the packaged application without accessing cameras, the ROS graph, or a robot; it does not validate a dataset, checkpoint, GPU, or physical system. Continue to [Start here](docs/index.md) and choose the path that matches the inputs you already have. Hardware workflows still require completed local configuration and the checks in [Hardware and safety](docs/hardware-and-safety.md).
 
-## Documentation
+Building from source is intentionally not part of onboarding. Contributors, advanced users, and maintainers should clone the repository and follow [Development](docs/development.md).
 
-The documentation has one recommended path:
+## Choose your path
 
-1. [Overview](docs/index.md)
-2. [Concepts for first-time users](docs/concepts.md)
-3. [Installation](docs/installation.md)
-4. [Your first run](docs/first-run.md)
-5. [Choose a capability](docs/capabilities.md)
-6. [Run a workflow](docs/workflows.md)
-7. [Hardware and safety](docs/hardware-and-safety.md)
-8. [Configuration reference](docs/configuration.md)
-9. [Development](docs/development.md)
-10. [Release and validation](docs/release-and-validation.md)
-
-Use **Choose a capability** when deciding what to do and **Run a workflow** when you need commands. Installation owns prerequisites and image setup; Your first run is the guided onboarding sequence.
+- **Using the lab bimanual robot:** copy the [UR Robotiq profile](docs/robot-integration.md), verify the released robot runtime, then follow [Hardware and safety](docs/hardware-and-safety.md).
+- **Adapting another robot:** start from the generic templates under `config/` and document its ROS interface before recording.
+- **Existing LeRobot dataset:** follow [Visualize your first dataset](docs/first-run.md), then [Choose and run a workflow](docs/workflows.md).
+- **Training or deployment:** use [Choose and run a workflow](docs/workflows.md) to check prerequisites and run the command in one place.
+- **Contributing or releasing:** use [Development](docs/development.md), including its quick verification flows.
 
 ## Status, contribution, and security
 
