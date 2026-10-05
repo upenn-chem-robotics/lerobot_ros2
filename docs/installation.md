@@ -1,83 +1,93 @@
 # Installation
 
-> **Page scope:** Use this page to prepare and verify the host and container environment. For the guided onboarding sequence, continue with [Your first run](first-run.md).
+> **Page scope:** This page installs a published release image for normal use. Source builds, editable mounts, tests, and documentation tooling belong in [Development](development.md). Release qualification belongs in [Release and validation](release-and-validation.md).
 
 ## Prerequisites
 
-Use Linux x86-64 with:
+Use Linux x86-64 with Docker Engine, Docker Compose v2, and enough storage for images, datasets, and checkpoints. NVIDIA Container Toolkit is required only for the `gpu` service.
 
-- Docker Engine
-- Docker Compose v2
-- Git
-- sufficient storage for Conda, PyTorch, ROS 2, images, datasets, and checkpoints
-- NVIDIA Container Toolkit only when using the GPU service
+The supported runtime is containerized. Do not combine the release image with host ROS, a host Conda environment, or a native pip installation.
 
-The supported installation is containerized. Do not combine the release environment with host ROS, a host Conda environment, or a native pip installation.
+## Obtain the release bundle
 
-## Clone and prepare local state
+Download and unpack the release bundle published with the image. It should contain at least `compose.yaml`, `examples/`, and the user documentation. A source checkout is not required for normal use. If only a source archive is published, use it as the Compose and configuration bundle without building it during onboarding.
+
+## Select the released image
+
+From the unpacked release directory:
 
 ```bash
-git clone <repository-url> lerobot-ros2
-cd lerobot-ros2
 mkdir -p config.local data
 cp examples/gello.yaml config.local/gello.yaml
-export UID="$(id -u)" GID="$(id -g)"
+export UID="$(id -u)"
+export GID="$(id -g)"
+export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
+export IMAGE_TAG="<release-tag>"
 ```
 
-`config.local/`, `compose.hardware.yaml`, and runtime data are intentionally excluded from version control.
+Use the image reference and immutable version or commit tag supplied in the release notes. Do not use `latest` as the only identifier.
 
-## Images and services
+`config.local/`, `compose.hardware.yaml`, datasets, and outputs are local state. Do not commit or redistribute them with credentials, device inventories, or participant data.
 
-The Compose file exposes four working modes:
+## Pull the runtime
 
-- `tools`: CPU runtime for diagnostics and dataset operations
-- `gpu`: runtime with GPU access for training and inference
+The Compose file exposes three user-facing services:
+
+- `tools`: CPU diagnostics, visualization, and dataset operations
+- `gpu`: GPU training and inference
 - `robot`: host-networked runtime extended with explicit hardware mappings
-- `dev`: source-mounted development image with test and lint tooling
 
-Build the CPU tools image and run the default preflight:
+Pull only what the current workflow needs:
 
 ```bash
-docker compose build tools
+docker compose pull tools
+```
+
+Later, as required:
+
+```bash
+docker compose pull gpu
+docker compose pull robot
+```
+
+The Compose file also contains a `dev` service and local build definitions. They are for contributors and maintainers, not required installation steps.
+
+## Verify the runtime
+
+```bash
 docker compose run --rm tools
 ```
 
-Build the development image when modifying source or documentation:
-
-```bash
-docker compose build dev
-docker compose run --rm dev pytest
-```
-
-## Verify the environment
-
-The default tools command checks configuration, imports, installed distributions, and the data directory without probing hardware or the ROS graph. Run the command directly when you need explicit options:
+The default command checks configuration, imports, installed distributions, and the data directory while skipping hardware and ROS-graph probing. To inspect options:
 
 ```bash
 docker compose run --rm tools lerobot-ros-doctor --help
-docker compose run --rm tools lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-For the repository-level checks, use the validation commands in [Release and validation](release-and-validation.md).
+Continue with [Your first run](first-run.md). Repository-wide validation is not part of normal installation.
 
-## Common installation failures
+## Common failures
+
+### Compose selects the wrong image
+
+```bash
+printf '%s:%s\n' "$LEROBOT_ROS_IMAGE" "$IMAGE_TAG"
+```
+
+The printed reference must match the release notes. Then rerun `docker compose pull tools`.
+
+### Registry authentication fails
+
+Use the authentication method documented by the registry and retry. Do not put registry tokens in `compose.yaml`, shell history, or committed files.
 
 ### Files are owned by root
 
-Export the host identifiers before building or running Compose:
+Export `UID` and `GID` before running Compose.
 
-```bash
-export UID="$(id -u)" GID="$(id -g)"
-```
+### GPU access fails
 
-### GPU is unavailable
+Confirm the CPU-only `tools` service works first. GPU workflows additionally require a working host NVIDIA driver and NVIDIA Container Toolkit.
 
-Confirm that the NVIDIA driver and NVIDIA Container Toolkit work with Docker before debugging the application. CPU workflows should use `tools`, not `gpu`.
+### You need to modify code
 
-### A dependency check fails
-
-Treat `python -m pip check` as a release failure. Dependencies are intentionally split between Conda and pip to avoid crossing ABI boundaries for NumPy, PyAV, OpenCV, FFmpeg, ROS, and PyTorch.
-
-### Local devices are missing
-
-Do not add `privileged: true`. Create `compose.hardware.yaml` with explicit stable device mappings as described in [Hardware and safety](hardware-and-safety.md).
+Switch to [Development](development.md), clone the repository, and use the `dev` target.

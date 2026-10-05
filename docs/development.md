@@ -1,5 +1,7 @@
 # Development
 
+> **Audience:** Contributors and advanced users who need to modify source or documentation. Normal users should use the published-image path in [Installation](installation.md).
+
 ## Repository structure
 
 - `src/lerobot_ros2/`: application and CLI implementation

@@ -6,7 +6,7 @@ x-common: &common
     args:
       APP_UID: ${UID:-1000}
       APP_GID: ${GID:-1000}
-  image: lerobot-ros2:${IMAGE_TAG:-dev}
+  image: ${LEROBOT_ROS_IMAGE:-lerobot-ros2}:${IMAGE_TAG:-dev}
   init: true
   environment:
     GELLO_CONFIG: /config/gello.yaml

@@ -1,132 +1,99 @@
 # Your first run
 
-> **Page scope:** This is the linear onboarding tutorial. For prerequisite details and installation troubleshooting, use [Installation](installation.md); for later command recipes, use [Workflows](workflows.md).
+> **Page scope:** This is the normal-user onboarding path for a published image. It deliberately avoids source builds, tests, linting, security scans, and release verification.
 
-This tutorial takes you from a fresh clone to a successful software-only diagnostic. It intentionally stops before commanding a robot. When complete, you will know that Docker can build the supported environment and that the project CLI starts correctly.
+This tutorial starts from an unpacked release bundle and ends with a successful software-only diagnostic. It does not command a robot.
 
-## 1. Understand the pieces
-
-You will work with three local directories or files:
-
-- `config.local/`: your machine-specific configuration;
-- `data/`: datasets and other local data;
-- `compose.hardware.yaml`: private device mappings for your workstation.
-
-These are local inputs, not portable project defaults. Do not commit device inventories, credentials, datasets, or checkpoints.
-
-## 2. Check the prerequisites
-
-The supported release path is Linux x86-64 with Docker Engine and Docker Compose v2. Run:
+## 1. Check Docker
 
 ```bash
 docker --version
 docker compose version
 ```
 
-Both commands must complete successfully. GPU training additionally requires the NVIDIA Container Toolkit, but it is not needed for this first run.
+Both commands must succeed. NVIDIA Container Toolkit is not needed for this first run.
 
-## 3. Clone and create local directories
+## 2. Prepare local state
 
 ```bash
-git clone <repository-url> lerobot-ros2
-cd lerobot-ros2
 mkdir -p config.local data
 cp examples/gello.yaml config.local/gello.yaml
-```
-
-The copied YAML is a starting template. Do not connect hardware using placeholder values.
-
-## 4. Set your container user IDs
-
-```bash
 export UID="$(id -u)"
 export GID="$(id -g)"
 ```
 
-This lets container-created files use your host user and group rather than `root`.
+The copied YAML is only a starting template. Do not connect hardware while placeholder values remain.
 
-## 5. Build the tools image
+## 3. Select and pull the release image
+
+Use the image reference and immutable tag supplied with the release:
 
 ```bash
-docker compose build tools
+export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
+export IMAGE_TAG="<release-tag>"
+docker compose pull tools
 ```
 
-**Expected result:** Docker completes the image build without an error. If the build fails, keep the first meaningful error line and check network access, disk space, and Docker permissions before changing project code.
+**Expected result:** Compose downloads the published image rather than compiling project source.
 
-## 6. Run the safe, software-only diagnostic
+## 4. Run the software-only diagnostic
 
 ```bash
 docker compose run --rm tools
 ```
 
-The default command runs `lerobot-ros-doctor` without hardware or ROS graph probes.
+The default command runs `lerobot-ros-doctor` with hardware and ROS-graph probing disabled.
 
-**Expected result:** the diagnostic prints checks for the packaged runtime and configuration. It may report that no hardware devices are declared. That is acceptable at this stage.
+**Expected result:** configuration, imports, installed distributions, and the data directory pass their checks.
 
-**Stop here if:** the command cannot import the project, cannot read the configuration, or exits with a required check failing. Fix this before adding hardware because hardware errors would otherwise hide the basic runtime problem.
+If it fails, retain the first meaningful error. Check the image reference, registry access, Docker permissions, disk space, and local directory ownership before changing project code.
 
-## 7. Learn the command pattern
-
-Every workflow has a CLI entry point. Ask a command for its current options instead of copying flags from an old experiment:
+## 5. Inspect available commands
 
 ```bash
-docker compose run --rm tools lerobot-ros-export --help
-docker compose run --rm gpu lerobot-ros-train --help
+docker compose run --rm tools lerobot-ros-doctor --help
+docker compose run --rm tools lerobot-ros-app --help
 ```
 
-For hardware commands, use both Compose files:
+The normal installation is complete. Choose a task in [Workflows](workflows.md).
+
+## 6. Stop before hardware
+
+Before any physical workflow:
+
+1. Read [Hardware and safety](hardware-and-safety.md).
+2. Replace every `REPLACE_*` value.
+3. Create `compose.hardware.yaml` from the supplied example.
+4. Use stable `/dev/v4l/by-id` and `/dev/input/by-id` paths.
+5. Verify workspace clearance, limits, and emergency-stop access.
+6. Pull the same released tag for `robot` and run the full preflight without enabling actuation.
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
-  lerobot-ros-record --help
-```
-
-This only displays help, but Docker still evaluates the hardware override. Create the override before using this form.
-
-## 8. Prepare for hardware, without moving it
-
-1. Replace every `REPLACE_*` value in your local configuration.
-2. Create `compose.hardware.yaml` from the repository example.
-3. Use stable `/dev/v4l/by-id` and `/dev/input/by-id` paths.
-4. Verify workspace clearance, limits, and emergency-stop access.
-5. Run the full preflight:
-
-```bash
+docker compose pull robot
 docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
   lerobot-ros-doctor
 ```
 
-**Expected result:** declared devices are present, the configuration loads, and required checks pass.
+Do not continue if a required check fails, a device path is ambiguous, the expected ROS graph differs, limits are unverified, or the emergency stop is unavailable.
 
-**Do not continue to actuation if:** a required check fails, a device path is ambiguous, the expected ROS graph differs, limits are unverified, or the emergency stop is unavailable.
+## Advanced paths
 
-## 9. Pick the next tutorial path
+To modify source, build images, run tests or linting, or edit documentation, use [Development](development.md). To qualify an artifact for publication, use [Release and validation](release-and-validation.md). Neither path is part of normal onboarding.
 
-- To understand the available workflows, read [What you can do](capabilities.md).
-- To bring up hardware in controlled stages, read [Hardware and safety](hardware-and-safety.md).
-- To record, transform, train, deploy, or run DAgger, use [Workflows](workflows.md).
-- To understand mounts and local overrides, use [Configuration](configuration.md).
+## Troubleshooting
 
-## Troubleshooting this tutorial
+### Compose builds instead of pulling
+
+Run `docker compose pull <service>` before `docker compose run`. Confirm `LEROBOT_ROS_IMAGE` and `IMAGE_TAG` identify a published artifact.
 
 ### Docker permission denied
 
-Confirm that your account can run `docker info`. Follow your organization’s Docker access policy rather than running the whole workflow as `root`.
+Confirm your account can run `docker info`. Follow your organization's Docker access policy instead of running the whole workflow as `root`.
 
-### Files are owned by root
-
-Start a new shell, export `UID` and `GID` again, and rerun the relevant container command.
-
-### Configuration still contains placeholders
-
-Search only your local configuration:
+### Configuration contains placeholders
 
 ```bash
 grep -R "REPLACE_" config.local compose.hardware.yaml 2>/dev/null
 ```
 
 Replace every result before hardware use.
-
-### A device disappears between reboots
-
-Do not use changing names such as `/dev/video0` when a stable `/dev/v4l/by-id/...` path is available. Update the local configuration and hardware override together.

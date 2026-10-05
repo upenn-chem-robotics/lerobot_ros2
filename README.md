@@ -19,17 +19,22 @@ macOS, Windows, Docker Desktop USB forwarding, host ROS integration, and arbitra
 
 ## Quick start
 
+The supported user path consumes a published image. Obtain the small release bundle containing `compose.yaml`, `examples/`, and the documentation, then select the released image and tag:
+
 ```bash
-git clone <repository-url> lerobot-ros2
 cd lerobot-ros2
 mkdir -p config.local data
 cp examples/gello.yaml config.local/gello.yaml
 export UID="$(id -u)" GID="$(id -g)"
-docker compose build tools
+export LEROBOT_ROS_IMAGE="<registry>/<namespace>/lerobot-ros2"
+export IMAGE_TAG="<release-tag>"
+docker compose pull tools
 docker compose run --rm tools
 ```
 
-This is a software-only diagnostic. Before using hardware, replace every `REPLACE_*` value, create `compose.hardware.yaml` from the example, and follow the safety checks in the documentation.
+This is a software-only diagnostic. It does not probe hardware or enable actuation. Before using hardware, replace every `REPLACE_*` value, create `compose.hardware.yaml` from the example, and follow the safety checks in the documentation.
+
+Building from source is intentionally not part of onboarding. Contributors and advanced users should clone the repository and follow [Development](docs/development.md). Maintainers should use [Release and validation](docs/release-and-validation.md).
 
 ## Documentation
 

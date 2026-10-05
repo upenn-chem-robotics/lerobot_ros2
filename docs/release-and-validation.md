@@ -1,5 +1,7 @@
 # Release and validation
 
+> **Audience:** Maintainers qualifying and publishing release artifacts. These checks are not part of normal installation or first-run onboarding.
+
 A release claim must match the validation level actually completed. Hardware-free success does not imply checkpoint, dataset, or hardware acceptance.
 
 ## Validation levels
