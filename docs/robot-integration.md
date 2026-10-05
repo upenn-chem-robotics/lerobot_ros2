@@ -1,4 +1,4 @@
-# Robot integration
+# Reference robot integration
 
 ## Supported reference integration
 
@@ -17,7 +17,109 @@ The robot code remains an external runtime dependency. Operators start the publi
 !!! danger "Actuation boundary"
     The robot runtime can power robots, release brakes, start controllers, and publish commands. Complete [Hardware and safety](hardware-and-safety.md), keep both GELLO offset nodes in `control_mode=0` during checks, and follow the site's robot operating procedure.
 
-Generic templates remain available for adaptation to other robots and sites, but those configurations are not presented as supported integrations.
+Configurations derived from the generic templates are not supported reference integrations.
+
+## System map
+
+The reference integration spans the workstation and two robot controllers. The diagram shows ownership of the main processes and the distinct network paths; machine-local addresses and device identities remain outside the repository.
+
+<div class="diagram-preview" markdown="1">
+
+```mermaid
+flowchart LR
+  subgraph Host[Workstation]
+    LR2[lerobot_ros2 container]
+    RR[Released ur_robotiq ROS 2 runtime]
+    GL[Left GELLO]
+    GR[Right GELLO]
+    CAM[Cameras]
+    PED[Foot pedal]
+  end
+
+  subgraph UL[Left UR controller]
+    ULC[External Control :50002]
+    ULT[ToolComm Forwarder :54321]
+    LG[Left Robotiq 2F-85]
+  end
+
+  subgraph UR[Right UR controller]
+    URC[External Control :50102]
+    URT[ToolComm Forwarder :54322]
+    RG[Right Robotiq 2F-85]
+  end
+
+  LR2 <-->|ROS 2 topics and services| RR
+  GL --> LR2
+  GR --> LR2
+  CAM --> LR2
+  PED --> LR2
+  RR <-->|custom port 50002| ULC
+  RR <-->|custom port 50102| URC
+  RR <-->|TCP 54321| ULT
+  RR <-->|TCP 54322| URT
+  ULT --> LG
+  URT --> RG
+```
+
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-robot-integration-md-1" aria-label="Enlarge diagram 1">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-robot-integration-md-1" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-robot-integration-md-1" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart LR
+  subgraph Host[Workstation]
+    LR2[lerobot_ros2 container]
+    RR[Released ur_robotiq ROS 2 runtime]
+    GL[Left GELLO]
+    GR[Right GELLO]
+    CAM[Cameras]
+    PED[Foot pedal]
+  end
+
+  subgraph UL[Left UR controller]
+    ULC[External Control :50002]
+    ULT[ToolComm Forwarder :54321]
+    LG[Left Robotiq 2F-85]
+  end
+
+  subgraph UR[Right UR controller]
+    URC[External Control :50102]
+    URT[ToolComm Forwarder :54322]
+    RG[Right Robotiq 2F-85]
+  end
+
+  LR2 <-->|ROS 2 topics and services| RR
+  GL --> LR2
+  GR --> LR2
+  CAM --> LR2
+  PED --> LR2
+  RR <-->|custom port 50002| ULC
+  RR <-->|custom port 50102| URC
+  RR <-->|TCP 54321| ULT
+  RR <-->|TCP 54322| URT
+  ULT --> LG
+  URT --> RG
+```
+
+  </div>
+</div>
+
+| Boundary | Configured in |
+|---|---|
+| ROS topics, services, recording semantics, and camera roles | `config.local/gello.yaml`, copied from the profile |
+| Host camera, GELLO, and foot-pedal device mappings | `compose.hardware.yaml`, copied from the profile |
+| Robot addresses, External Control ports, ToolComm ports, and controller setup | External released robot runtime and robot-side configuration |
+| Dataset and output locations | Host directories mounted by `compose.yaml` |
+
+!!! warning "Topology is not acceptance"
+    The diagram does not establish hardware readiness. Keep both GELLO offset nodes in `control_mode=0` until the numbered integration checks are complete.
 
 ## What is committed
 
@@ -31,7 +133,7 @@ The profile separates reusable integration decisions from machine-local state:
 | `config/gello.example.yaml` | Generic annotated template for other robots and sites. |
 | `config/compose.hardware.example.yaml` | Generic hardware-access template. |
 
-The profile intentionally does not commit robot IP addresses, calibration files, physical device identifiers, GELLO serial identifiers, or site network details.
+Robot IP addresses, calibration files, physical device identifiers, GELLO serial identifiers, and site network details remain outside the committed profile.
 
 ## 1. Copy the supported profile
 
@@ -47,9 +149,9 @@ Replace machine-local device placeholders, then check that none remain:
 grep -R "REPLACE_" config.local/gello.yaml compose.hardware.yaml
 ```
 
-No output is expected before hardware access.
+The command must produce no output before hardware access.
 
-For a different robot or site, start from the generic files under `config/` instead of this profile.
+Other robots and sites use the generic files under `config/` rather than this profile.
 
 ## 2. Prepare the robot hardware
 
@@ -60,7 +162,7 @@ The robot-side setup follows the same upstream procedures referenced by the `ur_
 3. [Install and configure the Universal Robots ToolComm Forwarder URCap](https://github.com/UniversalRobots/Universal_Robots_ToolComm_Forwarder_URCap) for gripper communication.
 
 !!! caution "Use distinct ports"
-    The two robots must not use the same External Control custom port. The launch example below uses `50002` for the left robot and `50102` for the right robot.
+    The two robots must not use the same External Control custom port. Both controller paths are exposed to the same workstation runtime, so each path needs an unambiguous endpoint. The launch example below uses `50002` for the left robot and `50102` for the right robot.
 
 ### Configure ToolComm for two grippers
 
@@ -105,7 +207,7 @@ docker start ur_robotiq || \
     ghcr.io/penzottimattia/ur_robotiq:gello
 ```
 
-Launch the bimanual stack with the site-specific values. Keep the dashboard setup node disabled for the first real-hardware graph check:
+Launch the bimanual stack with the site-specific values. Keep the dashboard setup node disabled for the first real-hardware graph check because it can operate dashboard services, including power, brake, program-load, and play operations:
 
 ```bash
 docker exec -it ur_robotiq bash -lc '  source /opt/ros/humble/ur_robotiq/setup.bash && \
@@ -123,7 +225,7 @@ docker exec -it ur_robotiq bash -lc '  source /opt/ros/humble/ur_robotiq/setup.b
 
 Replace every placeholder and confirm that the selected ports match the teach-pendant and ToolComm configuration. Do not reuse example IP addresses from another installation.
 
-Inspect the launch arguments exposed by the installed runtime when needed:
+To inspect the launch arguments exposed by the installed runtime:
 
 ```bash
 docker exec -it ur_robotiq bash -lc '  source /opt/ros/humble/ur_robotiq/setup.bash && \
@@ -205,7 +307,7 @@ After the interface check:
 
 ### The robot runtime starts but topics are missing
 
-Confirm that both runtimes use the same `ROS_DOMAIN_ID`, host ROS networking is available, and the robot deployment reports active controllers. Do not patch the robot container from this guide.
+Confirm that both runtimes use the same `ROS_DOMAIN_ID`, host ROS networking is available, and the robot deployment reports active controllers. Resolve missing topics in the deployed robot runtime or its reviewed configuration; do not patch the running container.
 
 ### Service names differ from the profile
 

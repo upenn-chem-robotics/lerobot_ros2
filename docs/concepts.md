@@ -1,10 +1,12 @@
-# Concepts for first-time robot-learning users
+# Robot-learning fundamentals
 
-This page explains the ideas behind the commands. It assumes no robotics or machine-learning background.
+This page defines the robotics and machine-learning terms used by the commands.
 
-## Start with one simple example
+## Example workflow
 
 Imagine that the task is **pick up a block and place it in a tray**.
+
+<div class="diagram-preview" markdown="1">
 
 ```mermaid
 flowchart LR
@@ -15,7 +17,30 @@ flowchart LR
     E --> F[The policy is deployed carefully]
 ```
 
-The following terms name the pieces of that process.
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-concepts-md-1" aria-label="Enlarge diagram 1">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-concepts-md-1" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-concepts-md-1" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart LR
+    A[Person controls the robot] --> B[Cameras and robot state are recorded]
+    B --> C[Training finds patterns in the examples]
+    C --> D[A policy is saved as a checkpoint]
+    D --> E[The checkpoint is validated]
+    E --> F[The policy is deployed carefully]
+```
+
+  </div>
+</div>
+
+The workflow consists of observations, actions, demonstrations, datasets, policies, checkpoints, and deployment.
 
 ## Observation: what the robot can currently sense
 
@@ -59,9 +84,11 @@ A **checkpoint** is a saved state of the policy produced during training. Differ
 
 Deployment is where a software prediction may become physical motion. Loading a checkpoint successfully does not prove that its cameras, observation shapes, action dimensions, frequency, or normalization match the current system.
 
-## Why probe cameras?
+## Camera probing
 
 Linux camera numbering can change, and several connected cameras may look similar to software. **Camera probing** helps determine which physical camera corresponds to each device path and configured input.
+
+<div class="diagram-preview" markdown="1">
 
 ```mermaid
 flowchart TB
@@ -73,15 +100,41 @@ flowchart TB
     D2 --> I2[Policy input: wrist camera]
 ```
 
-This matters because a policy does not understand a label such as “left camera” in the human sense. It learns from the image stream connected to that input during training. If deployment supplies a different camera, a mirrored view, a rotated image, or a different resolution, the policy receives a different kind of observation.
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-concepts-md-2" aria-label="Enlarge diagram 2">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-concepts-md-2" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-concepts-md-2" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart TB
+    C1[Physical camera: workspace view] --> P[Camera probing]
+    C2[Physical camera: wrist view] --> P
+    P --> D1[Stable device path A]
+    P --> D2[Stable device path B]
+    D1 --> I1[Policy input: workspace camera]
+    D2 --> I2[Policy input: wrist camera]
+```
+
+  </div>
+</div>
+
+A policy learns from the image stream connected to each configured input during training, not from the human meaning of a label such as “left camera.” A different camera, mirrored view, rotated image, or resolution at deployment changes the observation presented to the policy.
 
 Probe cameras before recording when cameras were installed or moved, USB connections changed, device paths changed after reboot, two cameras may have been exchanged, or image orientation, resolution, or frame rate is uncertain.
 
 Probing is a configuration check. It is not camera calibration, and it does not make different viewpoints interchangeable.
 
-## Why transform datasets?
+## Dataset transformations
 
-A **dataset transformation** creates a revised representation for a specific purpose. The safe mental model is “derive and inspect a new dataset,” not “clean up the original in place.”
+A **dataset transformation** creates a revised representation for a specific purpose. Write the result as a new dataset, inspect it, and retain the original unchanged.
+
+<div class="diagram-preview" markdown="1">
 
 ```mermaid
 flowchart LR
@@ -99,6 +152,37 @@ flowchart LR
     H --> I[Preview and validate]
     I --> J[Use for training only if correct]
 ```
+
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-concepts-md-3" aria-label="Enlarge diagram 3">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-concepts-md-3" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-concepts-md-3" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart LR
+    A[Original recorded dataset] --> B{What mismatch must be corrected?}
+    B -->|Frame rate| C[Downsample]
+    B -->|Field or convention mismatch| D[Canonicalize]
+    B -->|Image orientation| E[Reorient]
+    B -->|Unwanted interval| F[Trim or cut]
+    B -->|Metadata organization| G[Repair metadata]
+    C --> H[Derived dataset]
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+    H --> I[Preview and validate]
+    I --> J[Use for training only if correct]
+```
+
+  </div>
+</div>
 
 ### Downsampling
 
@@ -132,19 +216,25 @@ Action-source metadata records where commands came from, such as a policy or a h
 
 Always preview and compare the derived dataset before training. Keep the source unchanged until the result has been validated.
 
-## Why use more than one observation frame?
+## Observation history
 
 Two current images may look nearly identical even though the gripper is approaching the block in one case and moving away in the other. A history provides temporal context.
 
-## Diffusion policy, in plain language
+## Diffusion policy
 
-A **diffusion policy** generates a sequence of candidate robot actions through an iterative denoising process. For a first-time user, the important point is that it predicts an action sequence conditioned on observations. It does not look up a fixed motion script.
+A **diffusion policy** generates a sequence of candidate robot actions through an iterative denoising process. It predicts an action sequence conditioned on observations rather than retrieving a fixed motion script.
 
 The custom variants in this repository encode different assumptions about which history is useful. They are not universally better than the simpler alternative.
 
+## Project-specific policy variants
+
+The following variants change what temporal information is presented to the policy. They address different sources of partial observability and are not general improvements over the stock diffusion policy. Choose one only when its added history matches information the task actually requires.
+
 ## Strided diffusion: look farther back without using every frame
 
-A normal consecutive history uses neighboring frames. `strided_diffusion` instead uses frames separated uniformly in time, allowing the same number of observation slots to cover a longer period.
+A normal consecutive history uses neighboring frames. `strided_diffusion` instead uses frames separated uniformly in time, allowing the same number of observation slots to cover a longer period. For example, with `n_obs_steps=3` and `stride_seconds=1`, the policy receives observations from approximately now, one second ago, and two seconds ago; it does not receive every frame from that interval.
+
+<div class="diagram-preview" markdown="1">
 
 ```mermaid
 flowchart TB
@@ -159,9 +249,36 @@ flowchart TB
     end
 ```
 
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-concepts-md-4" aria-label="Enlarge diagram 4">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-concepts-md-4" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-concepts-md-4" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart TB
+    subgraph Consecutive_history[Consecutive history at 30 FPS]
+        direction LR
+        A1[67 ms ago] --> A2[33 ms ago] --> A3[Now]
+    end
+
+    subgraph Strided_history[Strided history with a 1 second stride]
+        direction LR
+        B1[2 seconds ago] --> B2[1 second ago] --> B3[Now]
+    end
+```
+
+  </div>
+</div>
+
 Striding may help when a task depends on slower context, such as the phase of a manipulation or how the current pose was reached. It may be less appropriate when fast changes between adjacent frames are critical.
 
-Important consequences:
+Configuration constraints:
 
 - `policy.fps` must match the dataset FPS for this plugin;
 - `stride_seconds` controls the temporal spacing;
@@ -169,19 +286,21 @@ Important consequences:
 - unavailable history at the beginning of an episode is copy-padded by the implementation;
 - deployment must reproduce the history convention used during training.
 
-Choose striding because the task needs a longer view of the recent past, not merely because the option exists.
+Use striding when the task requires a longer view of the recent past and adjacent-frame detail is not the primary requirement.
 
 ## Action-history diffusion: remember previous commands
 
-`action_history_diffusion` conditions the policy on previous commanded actions as well as the current observations. This can provide information that is not fully visible in the current image and robot state.
+`action_history_diffusion` conditions the policy on previous commanded actions as well as the current observations. This can provide information that is not fully visible in the current image and robot state. The history contains commands, not guaranteed physical motion: controller limits, communication, and mechanism response can make the executed motion differ from the requested action.
 
 It also creates a possible dependency: the policy may rely too strongly on previous commands. The plugin includes action-history dropout to reduce this dependence during training. Setting `n_action_history=0` removes the extra action-history conditioning and matches the stock diffusion-policy conditioning path described by the plugin documentation.
 
-Use action history when previous commands are meaningfully informative for the task. Do not assume that adding it always improves performance.
+Use action history when previous commands provide information that is not available in the current observations. It can otherwise add an unnecessary dependency on prior commands.
 
 ## DAgger: collect corrections where the policy struggles
 
 **DAgger** is an iterative data-collection workflow. Instead of collecting only demonstrations where a person acts from start to finish, it runs the current policy and captures human corrections around situations the policy actually encounters.
+
+<div class="diagram-preview" markdown="1">
 
 ```mermaid
 flowchart LR
@@ -196,7 +315,34 @@ flowchart LR
     H --> B
 ```
 
-Why use it? A policy’s own mistakes can move the robot into states that are rare or absent in the original demonstrations. Corrections collected in those states can teach the next policy what to do there.
+<button class="diagram-preview__open" type="button" popovertarget="diagram-popover-docs-concepts-md-5" aria-label="Enlarge diagram 5">
+  <span aria-hidden="true">Enlarge</span>
+</button>
+</div>
+
+<div id="diagram-popover-docs-concepts-md-5" class="diagram-popover" popover>
+  <div class="diagram-popover__toolbar">
+    <button class="diagram-popover__close" type="button" popovertarget="diagram-popover-docs-concepts-md-5" popovertargetaction="hide">Close</button>
+  </div>
+  <div class="diagram-popover__viewport" markdown="1">
+
+```mermaid
+flowchart LR
+    A[Train an initial policy] --> B[Run it under controlled conditions]
+    B --> C{Does the policy need correction?}
+    C -->|No| B
+    C -->|Yes| D[Human intervenes]
+    D --> E[Record correction and action source]
+    E --> F[Add reviewed corrective data]
+    F --> G[Train the next policy version]
+    G --> H[Validate against the previous version]
+    H --> B
+```
+
+  </div>
+</div>
+
+A policy’s mistakes can move the robot into states that are rare or absent in the original demonstrations. Corrections collected in those states provide training examples for the next policy.
 
 DAgger is not an automatic repair mechanism. Poor interventions, ambiguous action-source metadata, unsafe rollouts, or uncontrolled mixing of dataset versions can make the result worse. This repository therefore separates DAgger collection from DAgger training and supports sampling based on DAgger and action-source metadata.
 
@@ -208,16 +354,3 @@ DAgger is not an automatic repair mechanism. Poor interventions, ambiguous actio
 - **Controlled physical validation:** does behavior remain acceptable on the real system within defined limits?
 
 A successful training run answers only the first question.
-
-## A beginner’s decision path
-
-1. Run the software-only doctor check.
-2. Probe and identify cameras before recording.
-3. Record a small, consistent dataset.
-4. Preview episodes and verify observations, actions, timing, and task boundaries.
-5. Transform data only when you can name the mismatch being corrected.
-6. Start with the simplest policy that fits the task.
-7. Use strided observations only when longer temporal context is relevant.
-8. Use action history only when previous commands provide useful context.
-9. Deploy first without motion, then use constrained physical checks.
-10. Consider DAgger only after identifying recurring states where the policy needs corrective data.

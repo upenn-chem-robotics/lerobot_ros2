@@ -1,6 +1,6 @@
 # Choose and run a workflow
 
-Use this page to select an operation, confirm its prerequisites, and run the corresponding command. If terms such as *episode*, *policy*, or *checkpoint* are unfamiliar, begin with [Concepts](concepts.md).
+Each workflow below states its scope, prerequisites, and command. Definitions of *episode*, *policy*, and *checkpoint* are provided in [Robot-learning fundamentals](concepts.md).
 
 > Replace angle-bracket placeholders before running a command. Paths beginning with `/data` refer to the host `data/` directory mounted into the container.
 
@@ -22,8 +22,6 @@ Use this page to select an operation, confirm its prerequisites, and run the cor
 | Collect policy corrections | [Collect DAgger data](#collect-dagger-data) | Robot-capable | Deployable checkpoint and intervention interface |
 | Retrain with corrections | [Train from DAgger data](#train-from-dagger-data) | GPU-required | Compatible DAgger dataset and NVIDIA runtime |
 
-The commands are independent building blocks. An experiment does not need to use every workflow or follow the table from top to bottom.
-
 ## Run the software-only preflight
 
 **Scope:** software-only. **Requires:** the published `tools` image and local mounts. **Produces:** a runtime and configuration report; it does not validate a dataset, checkpoint, GPU, camera, ROS graph, or robot.
@@ -34,7 +32,7 @@ docker compose run --rm tools \
   lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-Use this to separate packaging or configuration failures from later dataset, learning, or hardware problems.
+Run this check before dataset, learning, or hardware diagnostics so packaging and mount failures are reported separately.
 
 ## Visualize a dataset
 
@@ -60,7 +58,7 @@ docker compose run --rm tools \
   --output-dir /data/<dataset>/exports/grid_media
 ```
 
-This writes grid videos and timeline images without replacing the source dataset.
+This writes grid videos and timeline images without replacing the source dataset. Use them for rapid visual review and comparison, not as a substitute for checking metadata and numerical signals. Confirm that the exports cover the intended episodes and camera streams.
 
 ## Start and verify the robot stack
 
@@ -70,8 +68,8 @@ The released robot runtime must be running before camera-enabled recording, depl
 
 Follow [Bimanual UR3 and Robotiq integration](robot-integration.md) for the supported launch commands and interface checks. Do not treat `lerobot-ros-doctor --skip-ros-graph` as a robot integration check.
 
-> **STOP: hardware boundary**
-> The next workflows can access cameras or command a robot. Read [Hardware and safety](hardware-and-safety.md), replace every `REPLACE_*` value, review `compose.hardware.yaml`, verify stable device paths, complete no-motion checks, clear the workspace, and confirm emergency-stop access.
+!!! warning "Hardware boundary"
+    The following workflows can access cameras or command a robot. Complete [Hardware and safety](hardware-and-safety.md), resolve every `REPLACE_*` value, review `compose.hardware.yaml`, verify stable device paths, complete no-motion checks, clear the workspace, and confirm emergency-stop access.
 
 ## Probe configured cameras
 
@@ -108,8 +106,6 @@ Use `--left` or `--right` only for a single-arm recording. Keep partial or inter
 
 **Scope:** software-only. **Requires:** an existing dataset; writes a new destination.
 
-Write to a new destination:
-
 ```bash
 docker compose run --rm tools \
   lerobot-ros-canonicalize \
@@ -118,7 +114,7 @@ docker compose run --rm tools \
   --task-name "<task description>"
 ```
 
-Do not point `--dst` at the source dataset.
+Canonicalization may change field names, ordering, shapes, or conventions to match the project schema. Do not point `--dst` at the source dataset. Before using the result, compare episode counts, observation fields, action dimensions, joint ordering, gripper convention, timestamps, and task metadata with the source.
 
 ## Reorient camera observations
 
@@ -132,7 +128,7 @@ docker compose run --rm tools \
   --camera <camera-name>:<episode-spec>
 ```
 
-Use a camera short name reported by `lerobot-ros-reorient --src /data/<source-dataset> --report`. The episode specification can be a single episode, a comma-separated list, a range, or `all`. The destination must differ from the source.
+Use a camera short name reported by `lerobot-ros-reorient --src /data/<source-dataset> --report`. The episode specification can be a single episode, a comma-separated list, a range, or `all`. Run `lerobot-ros-reorient --help` for the orientation operations supported by the installed release; preview the selected camera and episodes before applying one. The destination must differ from the source, and the transformed images must be checked against the orientation expected at deployment.
 
 ## Downsample a dataset
 
@@ -145,7 +141,7 @@ docker compose run --rm tools \
   --dst /data/<downsampled-dataset>
 ```
 
-Keep the source unchanged until the destination has been inspected.
+The command derives its resampling behavior from the installed command and dataset metadata; inspect `lerobot-ros-downsample --help` for the options and defaults of the released version rather than assuming a target rate from this example. Afterward, verify the destination FPS, timestamps, episode lengths, video alignment, and retention of short contacts or actions. Keep the source unchanged until the destination has been inspected.
 
 ## Back up a dataset or checkpoint directory
 
@@ -174,7 +170,7 @@ docker compose run --rm gpu \
   --steps=40000
 ```
 
-Record the dataset identity, configuration, released image tag, random seed, and output checkpoint. Add `--push` only after the backup mapping has been reviewed.
+The shown `--steps=40000` is an example run length, not evidence that the policy has converged or is deployable. Record the dataset identity, configuration, released image tag, random seed, and output checkpoint. Confirm that the saved policy reloads with the recorded observation and action schemas. Add `--push` only after the backup mapping has been reviewed.
 
 ## Deploy a checkpoint
 
@@ -205,7 +201,7 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
   --config /config/gello.yaml
 ```
 
-Treat every DAgger iteration as a new dataset and checkpoint lineage. Preserve the policy version, intervention source, episode metadata, and validation outcome.
+Treat every DAgger iteration as a new dataset and checkpoint lineage. Preserve the policy version, intervention source, episode metadata, and validation outcome. Before training, inspect how policy commands and human interventions are represented in the dataset's action-source metadata; do not assume that an intervention field has the same meaning across dataset versions.
 
 ## Train from DAgger data
 
@@ -221,4 +217,4 @@ docker compose run --rm gpu \
   --steps=40000
 ```
 
-The exact policy configuration must match the dataset schema and the intended deployment interface.
+The exact policy configuration must match the dataset schema and the intended deployment interface. Inspect the installed command's sampling and weighting options with `lerobot-ros-train-dagger --help`, and record the selected treatment of policy-generated and intervention data with the resulting checkpoint.

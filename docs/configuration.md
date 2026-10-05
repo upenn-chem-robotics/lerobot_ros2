@@ -1,6 +1,6 @@
-# Configuration
+# Configuration reference
 
-> **Page scope:** This is the reference for configuration files, paths, variables, mounts, devices, and secrets. Tutorials should link here instead of duplicating configuration details.
+> **Scope:** Configuration files, paths, variables, mounts, devices, and secrets.
 
 ## Minimum required edits
 
@@ -14,7 +14,7 @@ Keep `config/gello.example.yaml` as a reference. Copy it to `config.local/gello.
 | Recording | Camera, operator-input, ROS, arm, and gripper values used by the site. |
 | Deployment or DAgger | Recording inputs, compatible checkpoint, and completed no-motion checks. |
 
-Validate the merged Compose file and packaged application before hardware access:
+Validate the merged Compose file and packaged application before hardware access. In the rendered Compose output, review the resolved images, mounts, environment, networking, device mappings, and active configuration path:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml config
@@ -22,11 +22,13 @@ docker compose run --rm tools \
   lerobot-ros-doctor --skip-hardware --skip-ros-graph
 ```
 
-Remove every `REPLACE_*` value before camera or robot workflows. This preflight is not physical acceptance.
+A successful Compose render proves that the files can be merged; it does not prove that a device path exists or identifies the intended hardware. Remove every `REPLACE_*` value before camera or robot workflows. This preflight is not physical acceptance.
 
 ## Configuration model
 
-Generic copy-and-edit templates live in `config/` and end in `*.example.yaml`. Supported configurations under `profiles/` use their runtime filenames and are copied into the documented ignored runtime locations. Do not run hardware workflows directly from a generic example file.
+Configuration has three layers. Generic files under `config/` document the available structure; files under `profiles/` define reviewed integration assumptions; ignored local files hold the selected configuration plus machine-specific values. Local files may supply site details, but they should not silently redefine the profile's ROS interface or dataset semantics.
+
+Generic copy-and-edit templates live in `config/` and end in `*.example.yaml`. Supported configurations under `profiles/` use their runtime filenames and are copied into ignored runtime locations. Do not run hardware workflows directly from a generic example file.
 
 Committed files are examples and defaults. Local configuration belongs under `config.local/` and is mounted read-only at `/config`. Datasets and outputs belong under the host `data/` directory and are mounted at `/data`.
 
@@ -35,7 +37,7 @@ mkdir -p config.local data
 cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
 ```
 
-`profiles/ur_robotiq_bimanual/gello.yaml` is the supported lab profile. `config/gello.example.yaml` is the generic annotated template for other robots and sites. The profile commits stable ROS and dataset decisions; ignored local files hold machine-specific device identifiers and site details.
+`profiles/ur_robotiq_bimanual/gello.yaml` is the supported lab profile. `config/gello.example.yaml` is the generic annotated template for other robots and sites. The profile records shared ROS and dataset settings; ignored local files contain machine-specific device identifiers and site details.
 
 Replace every `REPLACE_*` value before running a hardware workflow. Never commit credentials, private datasets, participant data, robot network details, hardware inventories, or local device identifiers.
 
@@ -80,7 +82,8 @@ Run the merged configuration as follows:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml config
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-doctor
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-doctor
 ```
 
 Never use `privileged: true` as a substitute for identifying required devices.

@@ -1,3 +1,102 @@
 :root { --md-primary-fg-color: #37474f; --md-accent-fg-color: #ef6c00; }
 .md-typeset .ownership { border-left: .2rem solid var(--md-accent-fg-color); padding: .6rem .8rem; background: var(--md-code-bg-color); }
 .md-typeset .validation-badge { display: inline-block; padding: .15rem .5rem; border-radius: .8rem; font-weight: 700; background: #2e7d32; color: white; }
+
+
+/* Compact Mermaid preview with a browser-native, JavaScript-free enlarged popover. */
+.md-typeset .diagram-preview {
+  position: relative;
+}
+
+.md-typeset .diagram-preview .mermaid {
+  margin-bottom: 0;
+}
+
+.md-typeset .diagram-preview__open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  cursor: zoom-in;
+}
+
+.md-typeset .diagram-preview__open span {
+  position: absolute;
+  right: .5rem;
+  bottom: .5rem;
+  padding: .2rem .45rem;
+  border-radius: .2rem;
+  background: color-mix(in srgb, var(--md-default-bg-color) 88%, transparent);
+  color: var(--md-default-fg-color);
+  font-size: .64rem;
+  line-height: 1.2;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.md-typeset .diagram-preview:hover .diagram-preview__open span,
+.md-typeset .diagram-preview__open:focus-visible span {
+  opacity: .85;
+}
+
+.md-typeset .diagram-preview__open:focus-visible {
+  outline: .15rem solid var(--md-accent-fg-color);
+  outline-offset: .15rem;
+}
+
+.diagram-popover {
+  width: min(96vw, 100rem);
+  max-width: none;
+  height: fit-content;
+  max-height: 94vh;
+  padding: 0;
+  border: 0;
+  border-radius: .35rem;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  box-shadow: 0 .5rem 2rem rgba(0, 0, 0, .35);
+}
+
+.diagram-popover::backdrop {
+  background: rgba(0, 0, 0, .72);
+}
+
+.diagram-popover__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  padding: .5rem;
+  background: var(--md-default-bg-color);
+  border-bottom: .05rem solid var(--md-default-fg-color--lightest);
+}
+
+.diagram-popover__close {
+  padding: .35rem .65rem;
+  border: .05rem solid var(--md-default-fg-color--lighter);
+  border-radius: .2rem;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  cursor: pointer;
+  font: inherit;
+}
+
+.diagram-popover__viewport {
+  width: 100%;
+  max-height: calc(94vh - 2.8rem);
+  overflow: auto;
+  padding: 1rem;
+}
+
+.diagram-popover__viewport .mermaid svg {
+  display: block;
+  width: auto !important;
+  min-width: min(75rem, 180vw);
+  max-width: none !important;
+  height: auto;
+  margin: 0 auto;
+}

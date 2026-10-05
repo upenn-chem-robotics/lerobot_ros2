@@ -1,6 +1,6 @@
-# Development
+# Contributor guide
 
-> **Audience:** Contributors and advanced users who need to modify source or documentation. Normal users should use the published-image path in [Installation](installation.md).
+> **Audience:** Contributors modifying source code or documentation. Published releases are installed as described in [Install a released version](installation.md).
 
 ## Repository structure
 
@@ -11,7 +11,7 @@
 - `config/*.example.yaml`: annotated public configuration templates
 - `docs/`: public user and contributor documentation
 
-The runtime image installs wheels. Editable or source-mounted execution is reserved for the `dev` service so release behavior is tested against installed distributions.
+The runtime image installs wheels. Editable or source-mounted execution is reserved for the `dev` service so release behavior is tested against installed distributions. Before changing code, identify the owning command or package, reproduce the current behavior in `dev`, and determine which installed runtime image must ultimately contain the change. Do not validate only through an editable source mount when the released path uses installed wheels.
 
 ## Development environment
 
@@ -42,11 +42,11 @@ Console entry points are declared in `pyproject.toml`. A CLI change is complete 
 
 Policy plugins are separately built distributions under `packages/`. Keep plugin versions aligned with the main release and verify distribution discovery in the installed image. Tests should target the problem addressed by each policy rather than relying on arbitrary component ablations.
 
-For `strided_diffusion`, preserve the distinction between spaced observation history and contiguous predicted actions. For `action_history_diffusion`, test action-history dimensions, dropout behavior, and the `n_action_history=0` compatibility path.
+For `strided_diffusion`, preserve the distinction between spaced observation history and contiguous predicted actions. Test temporal indexing, beginning-of-episode padding, input shapes, serialization, and rejection of inconsistent FPS configuration. For `action_history_diffusion`, test action-history dimensions, dropout behavior, serialization, and the `n_action_history=0` compatibility path. Behavioral comparisons should be tied to the partial-observability problem the variant is intended to address rather than treated as arbitrary component ablations.
 
 ## Documentation
 
-The public documentation intentionally uses a small number of task-oriented pages. Add content to an existing page unless a genuinely separate user journey requires a new top-level page.
+Add material to the page that owns the relevant workflow. Create a top-level page only for a separate workflow.
 
 Build documentation strictly:
 
@@ -63,7 +63,7 @@ Do not commit local configuration, data, outputs, logs, checkpoints, tokens, rob
 
 ## Quick verification flows
 
-Run the smallest flow that covers your change before opening a pull request. These checks are developer feedback loops, not substitutes for controlled hardware testing when a change touches cameras, operator inputs, controllers, or robot motion.
+Before opening a pull request, run the verification flow that covers the changed components. Hardware-facing changes also require the controlled checks in [Hardware and safety](hardware-and-safety.md).
 
 ### Documentation-only change
 
@@ -96,7 +96,7 @@ This builds the runtime and development images, runs `pip check`, runs the ROS d
 bash scripts/verify_public_release.sh
 ```
 
-Use this when changing the Dockerfile, Compose files, packaging metadata, release bundle contents, entrypoint, dependency locks, or published-image behavior. Review the generated logs and resolve every failure before publishing.
+Use this when changing the Dockerfile, Compose files, packaging metadata, release bundle contents, entrypoint, dependency locks, or published-image behavior. Review the generated logs and resolve every failure before publishing. Retain the logs with the exact source and image identifiers to which the verification applies.
 
 ### Hardware-facing change
 

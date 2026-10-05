@@ -2,6 +2,8 @@
 
 Docker-first research tooling for ROS 2 bimanual teleoperation, LeRobot dataset recording and transformation, policy training, and deployment. ROS 2 Humble comes from the project containers rather than the host.
 
+Use the project to move through a complete robot-learning workflow: verify the packaged runtime, inspect sensors, record synchronized demonstrations, preserve or transform datasets, train and validate compatible policies, and deploy them through ROS 2.
+
 > [!IMPORTANT]
 > **Independent project.** This repository is not affiliated with, endorsed by, sponsored by, or officially connected with Hugging Face or the LeRobot project. LeRobot and Hugging Face are names used to identify the upstream projects and services with which this software interoperates.
 
@@ -17,7 +19,11 @@ Docker-first research tooling for ROS 2 bimanual teleoperation, LeRobot dataset 
 
 macOS, Windows, Docker Desktop USB forwarding, host ROS integration, and arbitrary camera firmware are best-effort and outside the supported contract.
 
-## Quick start
+## Install a released runtime
+
+A release has two matching parts: a tagged checkout containing documentation, profiles, and configuration templates, and a prebuilt runtime image. Keep the Git tag and `IMAGE_TAG` aligned. Normal users do not need the source tree; contributors should use the development workflow instead.
+
+The path is: install the released runtime, complete the software-only preflight, choose a dataset or hardware workflow, and finish the relevant safety checks before hardware access.
 
 Check out the user-facing files from the released tag without materializing the source tree. Replace `<release-tag>` with the tag named in the release notes.
 

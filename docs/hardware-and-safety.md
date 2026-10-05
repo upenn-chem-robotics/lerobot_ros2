@@ -1,6 +1,6 @@
 # Hardware and safety
 
-> **Page scope:** This page owns physical-device access, controlled bring-up, and acceptance checks. Complete it before running any workflow that can command hardware.
+> **Scope:** Physical-device access, controlled bring-up, and acceptance checks. Complete these checks before running any workflow that can command hardware.
 
 !!! danger "Not safety-rated"
     This project is research software. It is not safety-rated, does not provide a real-time guarantee, and cannot replace a risk assessment, guarding, emergency-stop system, or trained operator.
@@ -31,14 +31,16 @@ Complete these stages in order:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml config
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot   lerobot-ros-doctor
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot \
+  lerobot-ros-doctor
 ```
 
-A successful software preflight is necessary but not sufficient for safe actuation.
+!!! warning "Preflight boundary"
+    A successful software preflight does not establish readiness for safe actuation.
 
 ## Hardware acceptance record
 
-For each supported setup, record:
+For each supported setup, identify the released application image, robot-runtime image, profile or configuration revision, and checkpoint when one is being deployed. Then record:
 
 - camera enumeration and stream validation
 - pedal or operator-input behavior
@@ -55,7 +57,7 @@ Hardware acceptance is not covered by the automated hardware-free suite. Repeat 
 
 Complete these checks for the `ur_robotiq` stack before recording, deployment, or DAgger:
 
-1. Start with `mode:=full_mock` and verify the interface contract in [Robot integration](robot-integration.md).
+1. Start with `mode:=full_mock` and verify the interface contract in [Reference robot integration](robot-integration.md).
 2. Confirm the left and right robot IP assignments at the site without committing them.
 3. Confirm that left and right UR custom ports differ.
 4. Confirm that left and right ToolComm TCP ports differ.
@@ -72,4 +74,4 @@ Speed modes `2` and `3` are robot diagnostics and are not part of the normal rec
 
 ## Robot-stack shutdown
 
-Return both GELLO offset nodes to idle before stopping containers. Finalize dataset or deployment outputs, stop `lerobot_ros2`, stop the robot launch, and follow the site's robot program, brake, and power procedure. A container exit is not a substitute for a verified physical stop.
+Return both GELLO offset nodes to idle before stopping containers. Finalize dataset or deployment outputs, stop `lerobot_ros2`, stop the robot launch, and follow the site's robot program, brake, and power procedure. A container exit is not a substitute for a verified physical stop. If command publication cannot be confirmed stopped, use the site's physical stop procedure rather than relying on container state.
