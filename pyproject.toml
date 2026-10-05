@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "lerobot-ros2"
 version = "0.1.0"
 description = "Independent ROS 2 interoperability and research utilities for LeRobot-based robot-learning workflows."
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
 license = {file = "LICENSE"}
 # ``lerobot`` (huggingface/lerobot) is deliberately NOT declared here: it is

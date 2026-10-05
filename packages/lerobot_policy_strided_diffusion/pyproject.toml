@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "lerobot_policy_strided_diffusion"
 version = "0.1.0"
 description = "LeRobot third-party policy plugin: DiffusionPolicy with uniform-stride observation history."
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 # lerobot is assumed to be installed separately (editable) in the same env;
 # we deliberately don't declare it here to avoid pulling a PyPI version over it.
 dependencies = []
