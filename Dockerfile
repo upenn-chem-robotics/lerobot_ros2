@@ -50,7 +50,7 @@ RUN set -eux; \
 COPY --from=wheel-builder /wheels /wheels
 RUN conda run -n lerobot python -m pip install --no-deps /wheels/*.whl && \
     conda run -n lerobot python -m pip check && rm -rf /wheels
-COPY sh/entrypoint.sh /usr/local/bin/lerobot-entrypoint
+COPY scripts/entrypoint.sh /usr/local/bin/lerobot-entrypoint
 RUN chmod 0755 /usr/local/bin/lerobot-entrypoint && mkdir -p /data /config /cache/huggingface /cache/torch && \
     chown -R app:app /data /config /cache /home/app
 ENV GELLO_CONFIG=/config/gello.yaml \

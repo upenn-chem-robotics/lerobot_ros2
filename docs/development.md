@@ -5,8 +5,9 @@
 - `src/lerobot_ros2/`: application and CLI implementation
 - `packages/`: separately distributed policy plugins
 - `tests/`: unit and hardware-free integration tests
-- `docker/`: container entrypoint and runtime support
-- `examples/`: sanitized configuration examples
+- `scripts/`: release, validation, camera-support, backup, and container-entrypoint scripts
+- `examples/`: minimal comment-free onboarding configuration
+- `config/*.example.yaml`: annotated public configuration templates
 - `docs/`: public user and contributor documentation
 
 The runtime image installs wheels. Editable or source-mounted execution is reserved for the `dev` service so release behavior is tested against installed distributions.

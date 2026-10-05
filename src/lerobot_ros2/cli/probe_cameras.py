@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Probe every camera listed in ``config/gello.yaml`` and dump a structured
+Probe every camera listed in ``config.local/gello.yaml`` and dump a structured
 snapshot of every v4l2 control plus supported pixel formats to
 ``config/camera_probes/<camera_name>.yaml``.
 
@@ -10,9 +10,9 @@ in ``camera_defaults`` / per-camera ``settings`` in ``gello.yaml``.
 Requires ``v4l2-ctl`` (``sudo apt install v4l-utils``).
 
 Usage:
-    lerobot-ros-probe-cameras --config config/gello.yaml
-    lerobot-ros-probe-cameras --config config/gello.yaml --camera left_wrist_top
-    lerobot-ros-probe-cameras --config config/gello.yaml --raw
+    lerobot-ros-probe-cameras --config config.local/gello.yaml
+    lerobot-ros-probe-cameras --config config.local/gello.yaml --camera left_wrist_top
+    lerobot-ros-probe-cameras --config config.local/gello.yaml --raw
 """
 
 from __future__ import annotations

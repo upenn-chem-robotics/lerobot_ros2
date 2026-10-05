@@ -5,7 +5,7 @@ Behaves exactly like stock ``lerobot-train`` (same draccus parser, same
 ``TrainPipelineConfig`` / CLI flags). After training finishes, the whole
 ``--output_dir`` (all saved checkpoints, including ``last/``) is mirrored to its
 private HF repo via :mod:`lerobot_ros2.hub_sync`, following the mapping in
-``config/hf_backup.yaml``.
+``config.local/hf-backup.yaml``.
 
 Use this instead of ``lerobot-train`` when you want checkpoints auto-backed-up.
 For action-source / DAgger datasets use ``lerobot-ros-train-dagger`` (which has

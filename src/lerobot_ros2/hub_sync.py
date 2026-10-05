@@ -1,7 +1,7 @@
 """Mirror local dataset / checkpoint folders to private Hugging Face repos.
 
 This implements the "raw mirror" backup strategy described in
-``config/hf_backup.yaml``: a folder under ``data/`` is uploaded verbatim (its
+``config.local/hf-backup.yaml``: a folder under ``data/`` is uploaded verbatim (its
 internal ``meta/``, ``data/``, ``videos/``, ``deploy/`` tree preserved) into a
 private HF *dataset* repo, so it can be deleted locally and restored later with
 ``hf download <repo> --repo-type dataset --local-dir <path>``.
@@ -24,7 +24,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# config/hf_backup.yaml lives at the repo root; this file is at
+# config.local/hf-backup.yaml lives at the repo root; this file is at
 # <repo>/src/lerobot_ros2/hub_sync.py, so parents[2] is the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "hf_backup.yaml"
@@ -62,7 +62,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> BackupConf
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     if not path.exists():
         raise FileNotFoundError(
-            f"HF backup config not found at {path}. Expected config/hf_backup.yaml."
+            f"HF backup config not found at {path}. Expected config.local/hf-backup.yaml."
         )
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
 
@@ -132,7 +132,7 @@ def resolve_target(
         raise ValueError(
             f"{abs_path} is not under the configured data_root {cfg.data_root}; "
             f"cannot determine a backup repo. Either move it under data/ or add an "
-            f"entry to config/hf_backup.yaml, or run the backup manually."
+            f"entry to config.local/hf-backup.yaml, or run the backup manually."
         ) from exc
 
     parts = rel.parts

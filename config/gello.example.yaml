@@ -14,7 +14,6 @@ services:
   # after a mode transition has been requested.
   # If omitted, record.py derives them from control_mode by replacing
   # "/set_parameters" with "/transition_ready".
-  # try this one
   transition_ready:
     - "/left_gello_offset_node/wait_for_mode_transition"
     - "/right_gello_offset_node/wait_for_mode_transition"
@@ -90,7 +89,7 @@ unwrap:
 recording:
   hz: 10
   # When true, each camera can undo sudden 180° firmware flips by comparing to the previous frame
-  # (see orientation_stabilize_180_vs_prev in scripts/helper.py). Override per camera under left_cameras / etc.
+  # (see orientation_stabilize_180_vs_prev in src/lerobot_ros2/helper.py). Override per camera under left_cameras / etc.
   stabilize_orientation_180: true
   orientation_mae_delta_threshold: 20.0
 
@@ -104,17 +103,17 @@ visualization:
 #
 # It does NOT cover the OBSBOT Meet SE's AI auto-framing, HDR or SDK digital
 # zoom — those live behind OBSBOT's proprietary SDK and are unreachable from
-# here, so sh/obsbot_lock_cameras.sh must be run once per session to pin
+# here, so scripts/obsbot_lock_cameras.sh must be run once per session to pin
 # them. Note auto-framing drives `zoom_continuous`, not `zoom_absolute`, so the
 # zoom pin below verifies fine while the image still drifts if the script was
 # skipped. Where the two overlap (focus), this file is the last writer and wins.
-# See the "gello.yaml vs obsbot-cli" section of README.md.
+# See the camera-control notes in the hardware documentation.
 camera_defaults:
   settings:
     auto_exposure: 1
     white_balance_automatic: 0
     # Focal length MUST be identical across every recorded frame and every
-    # inference rollout — diffusion policy for needle insertion needs mm-level
+    # inference rollout — vision policies may require precise
     # positional consistency, and any focus/zoom drift silently corrupts the
     # image geometry. These two controls kill both sources of drift for ALL
     # cameras: continuous autofocus (focus breathing that looks like zooming)

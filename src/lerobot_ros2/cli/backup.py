@@ -10,7 +10,7 @@ Examples::
     # Authenticate once (write token from huggingface.co/settings/tokens):
     hf auth login            # or: export HF_TOKEN=hf_xxx
 
-    # One-time backup of every experiment folder listed in config/hf_backup.yaml
+    # One-time backup of every experiment folder listed in config.local/hf-backup.yaml
     # (resumable; safe to re-run after an interruption):
     lerobot-ros-backup --all
 
@@ -52,7 +52,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--all",
         action="store_true",
-        help="Back up every folder in config/hf_backup.yaml backup_targets.",
+        help="Back up every folder in config.local/hf-backup.yaml backup_targets.",
     )
     p.add_argument(
         "--verify",
@@ -67,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--delete-all",
         action="store_true",
-        help="Delete every HF repo listed in config/hf_backup.yaml backup_targets "
+        help="Delete every HF repo listed in config.local/hf-backup.yaml backup_targets "
              "(and --extra-repo names). Local files are not touched.",
     )
     p.add_argument(
@@ -86,7 +86,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--config",
         default=None,
-        help="Path to hf_backup.yaml (default: config/hf_backup.yaml).",
+        help="Path to hf_backup.yaml (default: config.local/hf-backup.yaml).",
     )
     p.add_argument(
         "--dry-run",

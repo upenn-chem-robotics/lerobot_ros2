@@ -130,8 +130,8 @@ fi
 
 run 'Repository root check' bash -lc 'test -f Dockerfile && test -f compose.yaml && test -f pyproject.toml && test -d src && test -d tests'
 run 'No forbidden runtime paths tracked' bash -lc "! git ls-files | grep -E '^(data|outputs|config.local|third_party)/'"
-run 'No unresolved merge markers' bash -lc "! git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . ':!sh/verify_public_release.sh'"
-run 'Required public-release files exist' bash -lc 'for f in LICENSE SECURITY.md CONTRIBUTING.md MIGRATION.md environment.yml requirements.lock.txt dependencies.env sh/entrypoint.sh docs/release-and-validation.md examples/gello.yaml examples/hf-backup.yaml .gitleaksignore; do test -e "$f" || { echo "missing: $f"; exit 1; }; done'
+run 'No unresolved merge markers' bash -lc "! git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . ':!scripts/verify_public_release.sh'"
+run 'Required public-release files exist' bash -lc 'for f in LICENSE SECURITY.md CONTRIBUTING.md MIGRATION.md environment.yml requirements.lock.txt dependencies.env scripts/entrypoint.sh docs/release-and-validation.md examples/gello.yaml config/gello.example.yaml config/hf-backup.example.yaml config/compose.hardware.example.yaml .gitleaksignore; do test -e "$f" || { echo "missing: $f"; exit 1; }; done'
 
 run 'Python, TOML, and YAML static validation' python3 - <<'PY'
 from pathlib import Path
@@ -148,8 +148,8 @@ for path in [
 ]:
     tomllib.loads(path.read_text(encoding='utf-8'))
 for path in [
-    root / 'environment.yml', root / 'compose.yaml', root / 'examples/gello.yaml',
-    root / 'examples/hf-backup.yaml', root / '.github/workflows/ci.yml',
+    root / 'environment.yml', root / 'compose.yaml', root / 'examples/gello.yaml', root / 'config/gello.example.yaml',
+    root / 'config/hf-backup.example.yaml', root / '.github/workflows/ci.yml',
 ]:
     yaml.safe_load(path.read_text(encoding='utf-8'))
 print('Static parsing passed.')

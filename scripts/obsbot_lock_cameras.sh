@@ -6,7 +6,7 @@
 # (v4l2 shows zoom_continuous jumping out of range, e.g. 245) as the gripper
 # moves near the lens. That focal-length drift corrupts the geometry a
 # diffusion policy relies on for mm-accurate needle insertion. Auto-framing is
-# an OBSBOT SDK feature, not a v4l2 control, so config/gello.yaml can't touch
+# an OBSBOT SDK feature, not a v4l2 control, so config.local/gello.yaml can't touch
 # it — this script does, via the CLI built by scripts/setup_obsbot_cli.sh.
 #
 # What it does to EVERY detected OBSBOT device (no per-camera mapping needed,
@@ -15,13 +15,13 @@
 #   - HDR         -> Off       (HDR retimes/reframes; keep exposure stable)
 #   - digital zoom-> 1.0x      (fixed, widest field of view)
 # Optionally, with --focus N, also pins manual focus (0-100) on every device.
-# By default focus is left to the v4l2 pipeline (config/gello.yaml's
+# By default focus is left to the v4l2 pipeline (config.local/gello.yaml's
 # focus_absolute), which already applies and verifies per camera at record time.
 #
 # Run this at the START of every recording / deploy session, AFTER the cameras
 # are plugged in and BEFORE `lerobot-ros-record` / `lerobot-ros-deploy`.
 #
-# This script and config/gello.yaml are complements, not alternatives: gello.yaml
+# This script and config.local/gello.yaml are complements, not alternatives: gello.yaml
 # owns every standard V4L2 control, this owns the SDK-only ones. See the
 # "gello.yaml vs obsbot-cli" section of README.md for the full split.
 #

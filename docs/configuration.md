@@ -4,12 +4,16 @@
 
 ## Configuration model
 
+All committed configuration templates live in `config/` and end in `*.example.yaml`. Copy a template to its documented ignored runtime location before editing it; do not run hardware workflows directly from an example file.
+
 Committed files are examples and defaults. Local configuration belongs under `config.local/` and is mounted read-only at `/config`. Datasets and outputs belong under the host `data/` directory and are mounted at `/data`.
 
 ```bash
 mkdir -p config.local data
 cp examples/gello.yaml config.local/gello.yaml
 ```
+
+`examples/gello.yaml` is the small comment-free copy used for onboarding and software-only checks. `config/gello.example.yaml` is the annotated reference template; `config/hf-backup.example.yaml` and `config/compose.hardware.example.yaml` are the other committed examples.
 
 Replace every `REPLACE_*` value before running a hardware workflow. Never commit credentials, private datasets, participant data, robot network details, hardware inventories, or local device identifiers.
 
@@ -26,7 +30,7 @@ Replace every `REPLACE_*` value before running a hardware workflow. Never commit
 
 The Compose services use these primary variables:
 
-- `GELLO_CONFIG`: path to the active configuration, normally `/config/gello.yaml`
+- `GELLO_CONFIG`: path to the active configuration, normally `/config.local/gello.yaml`
 - `HF_HOME`: Hugging Face cache location
 - `TORCH_HOME`: Torch cache location
 - `UID` and `GID`: host identity used for non-root container files

@@ -1,9 +1,0 @@
-hf_user: your-hf-username
-repo_prefix: lerobot-data
-repo_type: dataset
-private: true
-data_root: /data
-nested_roots: []
-backup_targets:
-  - local: /data/example-task
-    repo: lerobot-data-example-task

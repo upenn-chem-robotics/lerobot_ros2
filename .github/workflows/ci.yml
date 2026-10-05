@@ -39,7 +39,7 @@ jobs:
       - name: Runtime smoke tests
         run: |
           mkdir -p ci-config ci-data
-          cp examples/gello.yaml ci-config/gello.yaml
+          cp config/gello.example.yaml ci-config.local/gello.yaml
           docker run --rm -e GELLO_CONFIG=/config/gello.yaml -v "$PWD/ci-config:/config:ro" -v "$PWD/ci-data:/data" "$IMAGE" lerobot-ros-doctor --skip-hardware --skip-ros-graph
           docker run --rm "$IMAGE" python -m pip check
           docker run --rm "$IMAGE" ros2 doctor --report

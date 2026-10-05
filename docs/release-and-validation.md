@@ -17,7 +17,7 @@ Runtime and development image builds, `pip check`, package installation, ROS ins
 ROS 2 publisher/subscriber round trip, installed CLI parser execution, and policy tests in the built development image.
 
 ```bash
-./sh/test_no_hardware.sh
+./scripts/test_no_hardware.sh
 ```
 
 ### Level 3: synthetic dataset and checkpoint
@@ -33,7 +33,7 @@ Not covered by automated hardware-free validation. Cameras, operator inputs, das
 Run from the repository root:
 
 ```bash
-./sh/verify_public_release.sh
+./scripts/verify_public_release.sh
 ```
 
 The script writes a timestamped log and summary under `release-logs/` and continues after individual failures so one run captures the complete state. Do not publish from a different tree than the verified commit.
@@ -45,7 +45,7 @@ The script writes a timestamped log and summary under `release-logs/` and contin
 - [ ] Keep ABI-sensitive dependencies in their intended Conda or pip layer.
 - [ ] Build and clean-install all wheels.
 - [ ] Run Ruff, pytest, `pip check`, image smoke tests, and `ros2 doctor --report`.
-- [ ] Run `./sh/test_no_hardware.sh`.
+- [ ] Run `./scripts/test_no_hardware.sh`.
 - [ ] Run Gitleaks against the complete Git history and document reviewed suppressions.
 - [ ] Run Trivy against the release image.
 - [ ] Generate and retain an SPDX or CycloneDX SBOM.
