@@ -1,8 +1,9 @@
 # lerobot-ros2
 
-Docker-first research tooling for ROS 2 bimanual teleoperation, LeRobot dataset recording and transformation, policy training, and deployment. ROS 2 Humble comes from RoboStack through Conda inside Docker. Host ROS, host Conda, and native pip installation are not supported release paths.
+Docker-first research tooling for ROS 2 bimanual teleoperation, LeRobot dataset recording and transformation, policy training, and deployment. ROS 2 Humble comes from the project containers rather than the host.
 
-> **Physical safety:** this software can command real robots. Validate topics, services, limits, workspace clearance, emergency stops, and checkpoints without motion before actuation. This project is not safety-rated and provides no real-time guarantee.
+> [!WARNING]
+> This software can command real robots. Validate topics, services, limits, workspace clearance, emergency stops, and checkpoints without motion before actuation. This project is not safety-rated and provides no real-time guarantee.
 
 ## Supported platform
 
@@ -25,41 +26,24 @@ docker compose build tools
 docker compose run --rm tools
 ```
 
-The final command runs `lerobot-ros-doctor` without hardware or ROS graph probes. Replace all `REPLACE_*` values, create `compose.hardware.yaml` from the example, then run the full preflight:
-
-```bash
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot lerobot-ros-doctor
-```
-
-## Workflows
-
-```bash
-# Dataset operations
-docker compose run --rm tools lerobot-ros-export --help
-
-# Recording with hardware and host ROS networking
-docker compose -f compose.yaml -f compose.hardware.yaml run --rm robot lerobot-ros-record --help
-
-# GPU training and deployment
-docker compose run --rm gpu lerobot-ros-train --help
-```
+This is a software-only diagnostic. Before using hardware, replace every `REPLACE_*` value, create `compose.hardware.yaml` from the example, and follow the safety checks in the documentation.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md)
-- [Docker runtime](docs/docker.md)
-- [Configuration](docs/configuration.md)
-- [Hardware](docs/hardware.md)
-- [Recording](docs/recording.md)
-- [Deployment](docs/deployment.md)
-- [Training](docs/training.md)
-- [Dataset operations](docs/datasets.md)
-- [Policy plugins](docs/policy-plugins.md)
-- [Backup](docs/backup.md)
-- [Development](docs/development.md)
-- [Architecture](docs/architecture.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Release process](docs/release-process.md)
+The documentation has one recommended path:
+
+1. [Overview](docs/index.md)
+2. [Concepts for first-time users](docs/concepts.md)
+3. [Installation](docs/installation.md)
+4. [Your first run](docs/first-run.md)
+5. [Choose a capability](docs/capabilities.md)
+6. [Run a workflow](docs/workflows.md)
+7. [Hardware and safety](docs/hardware-and-safety.md)
+8. [Configuration reference](docs/configuration.md)
+9. [Development](docs/development.md)
+10. [Release and validation](docs/release-and-validation.md)
+
+Use **Choose a capability** when deciding what to do and **Run a workflow** when you need commands. Installation owns prerequisites and image setup; Your first run is the guided onboarding sequence.
 
 ## Status, contribution, and security
 

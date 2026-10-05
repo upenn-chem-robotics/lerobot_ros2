@@ -46,7 +46,8 @@ jobs:
       - name: Test development target
         run: |
           docker build --target dev -t "${IMAGE}-dev" .
-          docker run --rm -v "$PWD:/workspace" -w /workspace "${IMAGE}-dev" pytest
+          docker run --rm -v "$PWD:/workspace" -w /workspace "${IMAGE}-dev" pytest --ignore=tests/integration
+          docker run --rm -e ROS_DOMAIN_ID=127 -e ROS_LOCALHOST_ONLY=1 -v "$PWD:/workspace" -w /workspace "${IMAGE}-dev" pytest -q tests/integration/test_ros_graph_smoke.py tests/integration/test_console_scripts.py
           docker run --rm -v "$PWD:/workspace" -w /workspace "${IMAGE}-dev" ruff check .
       - name: Scan image
         uses: aquasecurity/trivy-action@0.31.0

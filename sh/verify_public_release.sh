@@ -130,8 +130,8 @@ fi
 
 run 'Repository root check' bash -lc 'test -f Dockerfile && test -f compose.yaml && test -f pyproject.toml && test -d src && test -d tests'
 run 'No forbidden runtime paths tracked' bash -lc "! git ls-files | grep -E '^(data|outputs|config.local|third_party)/'"
-run 'No unresolved merge markers' bash -lc "! git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . ':!verify_public_release.sh'"
-run 'Required public-release files exist' bash -lc 'for f in LICENSE SECURITY.md CONTRIBUTING.md MIGRATION.md environment.yml requirements.lock.txt dependencies.env docker/entrypoint.sh docs/release-process.md examples/gello.yaml examples/hf-backup.yaml .gitleaksignore GITLEAKS_FINDINGS_REVIEW.md; do test -e "$f" || { echo "missing: $f"; exit 1; }; done'
+run 'No unresolved merge markers' bash -lc "! git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . ':!sh/verify_public_release.sh'"
+run 'Required public-release files exist' bash -lc 'for f in LICENSE SECURITY.md CONTRIBUTING.md MIGRATION.md environment.yml requirements.lock.txt dependencies.env sh/entrypoint.sh docs/release-and-validation.md examples/gello.yaml examples/hf-backup.yaml .gitleaksignore; do test -e "$f" || { echo "missing: $f"; exit 1; }; done'
 
 run 'Python, TOML, and YAML static validation' python3 - <<'PY'
 from pathlib import Path
@@ -184,7 +184,8 @@ else
 fi
 
 if (( DEV_READY )); then
-  run 'Pytest in development image' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -o cache_dir=/tmp/pytest-cache
+  run 'Pytest in development image' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -o cache_dir=/tmp/pytest-cache --ignore=tests/integration
+  run 'Hardware-free ROS graph and CLI execution tests' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -e ROS_DOMAIN_ID=127 -e ROS_LOCALHOST_ONLY=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -q -o cache_dir=/tmp/pytest-integration tests/integration/test_ros_graph_smoke.py tests/integration/test_console_scripts.py
   run 'Ruff in development image' docker run --rm -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" ruff check --no-cache .
 else
   printf '[SKIP] Development checks: development image build failed\n'

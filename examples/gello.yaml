@@ -104,7 +104,7 @@ visualization:
 #
 # It does NOT cover the OBSBOT Meet SE's AI auto-framing, HDR or SDK digital
 # zoom — those live behind OBSBOT's proprietary SDK and are unreachable from
-# here, so scripts/obsbot_lock_cameras.sh must be run once per session to pin
+# here, so sh/obsbot_lock_cameras.sh must be run once per session to pin
 # them. Note auto-framing drives `zoom_continuous`, not `zoom_absolute`, so the
 # zoom pin below verifies fine while the image still drifts if the script was
 # skipped. Where the two overlap (focus), this file is the last writer and wins.

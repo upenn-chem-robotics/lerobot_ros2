@@ -1,0 +1,56 @@
+site_name: LeRobot ROS 2
+site_description: Docker-first documentation for ROS 2 bimanual teleoperation, LeRobot datasets, training, and deployment.
+site_url: https://penzottimattia.github.io/lerobot_ros2/
+repo_name: penzottimattia/lerobot_ros2
+repo_url: https://github.com/penzottimattia/lerobot_ros2
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+nav:
+  - Start here:
+      - Overview: index.md
+      - Concepts for first-time users: concepts.md
+      - Installation: installation.md
+      - Your first run: first-run.md
+  - Use the project:
+      - Choose a capability: capabilities.md
+      - Run a workflow: workflows.md
+      - Hardware and safety: hardware-and-safety.md
+      - Configuration reference: configuration.md
+  - Contribute and release:
+      - Development: development.md
+      - Release and validation: release-and-validation.md
+
+strict: true
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; LeRobot ROS 2 contributors
