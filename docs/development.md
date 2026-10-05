@@ -18,7 +18,7 @@ The runtime image installs wheels. Editable or source-mounted execution is reser
 Use a full clone rather than the sparse release checkout:
 
 ```bash
-git clone https://github.com/penzottimattia/lerobot_ros2.git
+git clone https://github.com/upenn-chem-robotics/lerobot_ros2.git
 cd lerobot_ros2
 git switch -c <branch-name>
 ```

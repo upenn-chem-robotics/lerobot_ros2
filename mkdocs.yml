@@ -1,8 +1,8 @@
 site_name: lerobot-ros2
 site_description: Documentation for the independent lerobot-ros2 interoperability project.
-site_url: https://penzottimattia.github.io/lerobot_ros2/
-repo_name: penzottimattia/lerobot_ros2
-repo_url: https://github.com/penzottimattia/lerobot_ros2
+site_url: https://upenn-chem-robotics.github.io/lerobot_ros2/
+repo_name: upenn-chem-robotics/lerobot_ros2
+repo_url: https://github.com/upenn-chem-robotics/lerobot_ros2
 
 theme:
   name: material

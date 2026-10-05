@@ -25,7 +25,7 @@ Replace `<release-tag>` with the tag shown in the release notes:
 ```bash
 git clone --filter=blob:none --sparse --no-checkout \
   --branch <release-tag> --single-branch \
-  https://github.com/penzottimattia/lerobot_ros2.git lerobot-ros2
+  https://github.com/upenn-chem-robotics/lerobot_ros2.git lerobot-ros2
 cd lerobot-ros2
 git sparse-checkout set docs config profiles
 git checkout
