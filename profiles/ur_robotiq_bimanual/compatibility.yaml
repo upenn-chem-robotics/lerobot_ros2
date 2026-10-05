@@ -2,7 +2,7 @@ profile: ur_robotiq_bimanual
 ros_distribution: humble
 robot_runtime:
   repository: penzottimattia/ur_robotiq
-  image: ghcr.io/penzottimattia/ur_robotiq:gello
+  image: ghcr.io/upenn-chem-robotics/ur_robotiq:gello
 interfaces:
   left_state: /left_state_broadcaster/joint_states
   right_state: /right_state_broadcaster/joint_states

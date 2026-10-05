@@ -39,11 +39,11 @@ This checkout supplies `compose.yaml`, documentation, profiles, templates, licen
 mkdir -p data
 export UID="$(id -u)"
 export GID="$(id -g)"
-export LEROBOT_ROS_IMAGE="ghcr.io/penzottimattia/lerobot-ros2"
-export IMAGE_TAG="<release-tag>"
+export LEROBOT_ROS_IMAGE="ghcr.io/upenn-chem-robotics/lerobot-ros2"
+export IMAGE_TAG="v0.1.0"
 ```
 
-Use the exact tag from the same release as the checkout. Avoid `latest`, because its meaning can change.
+This documentation is pinned to `ghcr.io/upenn-chem-robotics/lerobot-ros2:v0.1.0`. Keep the checked-out Git release and image tag aligned. Avoid `latest`, because its meaning can change.
 
 Check what Docker will run:
 

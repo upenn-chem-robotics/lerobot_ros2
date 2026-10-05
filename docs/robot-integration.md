@@ -208,12 +208,14 @@ Keep these machine-local values in the robot launch arguments and deployment con
 Create the long-lived container once, or start the existing container. Use host networking for the ROS and robot network path, but do not grant blanket privileged access. Add only reviewed device mappings, groups, or Linux capabilities when the driver actually requires them:
 
 ```bash
+docker pull ghcr.io/upenn-chem-robotics/ur_robotiq:gello
+
 docker start ur_robotiq || \
   docker run -dit \
     --net host \
     --name ur_robotiq \
     --entrypoint bash \
-    ghcr.io/penzottimattia/ur_robotiq:gello
+    ghcr.io/upenn-chem-robotics/ur_robotiq:gello
 ```
 
 Launch the bimanual stack with the site-specific values. Keep the dashboard setup node disabled for the first real-hardware graph check because it can operate dashboard services, including power, brake, program-load, and play operations:
