@@ -2,6 +2,9 @@
 
 Docker-first research tooling for ROS 2 bimanual teleoperation, LeRobot dataset recording and transformation, policy training, and deployment. ROS 2 Humble comes from the project containers rather than the host.
 
+> [!IMPORTANT]
+> **Independent project.** This repository is not affiliated with, endorsed by, sponsored by, or officially connected with Hugging Face or the LeRobot project. LeRobot and Hugging Face are names used to identify the upstream projects and services with which this software interoperates.
+
 > [!WARNING]
 > This software can command real robots. Validate topics, services, limits, workspace clearance, emergency stops, and checkpoints without motion before actuation. This project is not safety-rated and provides no real-time guarantee.
 
@@ -48,3 +51,7 @@ Use **Choose a capability** when deciding what to do and **Run a workflow** when
 ## Status, contribution, and security
 
 Research software. Public APIs and configuration may change before 1.0. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [LICENSE](LICENSE).
+
+## License and third-party software
+
+This project is licensed under the [Apache License 2.0](LICENSE). Third-party software, including LeRobot, remains subject to its own license and notices. See [Third-party notices](THIRD_PARTY_NOTICES.md) for dependency and attribution details.

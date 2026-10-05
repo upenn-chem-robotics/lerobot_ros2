@@ -1,5 +1,5 @@
-site_name: LeRobot ROS 2
-site_description: Docker-first documentation for ROS 2 bimanual teleoperation, LeRobot datasets, training, and deployment.
+site_name: lerobot-ros2 (independent project)
+site_description: Documentation for the independent lerobot-ros2 interoperability project.
 site_url: https://penzottimattia.github.io/lerobot_ros2/
 repo_name: penzottimattia/lerobot_ros2
 repo_url: https://github.com/penzottimattia/lerobot_ros2
@@ -30,6 +30,7 @@ nav:
   - Contribute and release:
       - Development: development.md
       - Release and validation: release-and-validation.md
+      - Legal, attribution, and independence: legal.md
 
 strict: true
 markdown_extensions:
@@ -53,4 +54,4 @@ markdown_extensions:
 extra_css:
   - stylesheets/extra.css
 
-copyright: Copyright &copy; LeRobot ROS 2 contributors
+copyright: Copyright &copy; lerobot-ros2 contributors

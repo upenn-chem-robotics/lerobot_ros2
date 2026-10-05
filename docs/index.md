@@ -2,6 +2,9 @@
 
 `lerobot_ros2` connects the main stages of a robot-learning experiment: identify sensors, control the robot, record examples, prepare datasets, train a policy, validate a checkpoint, deploy it, and collect corrective data.
 
+!!! important "Independent project"
+    This repository and its documentation are not affiliated with, endorsed by, sponsored by, or officially connected with Hugging Face or the LeRobot project. LeRobot and Hugging Face are names used to identify upstream projects and services with which this software interoperates.
+
 !!! warning "Physical safety"
     This software can command real robots. It is not safety-rated and provides no real-time guarantee. Validate topics, services, limits, workspace clearance, emergency stops, and checkpoints without motion before enabling actuation.
 

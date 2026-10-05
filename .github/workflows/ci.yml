@@ -38,9 +38,9 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Runtime smoke tests
         run: |
-          mkdir -p ci-config ci-data
-          cp config/gello.example.yaml ci-config.local/gello.yaml
-          docker run --rm -e GELLO_CONFIG=/config/gello.yaml -v "$PWD/ci-config:/config:ro" -v "$PWD/ci-data:/data" "$IMAGE" lerobot-ros-doctor --skip-hardware --skip-ros-graph
+          mkdir -p config.local ci-data
+          cp examples/gello.yaml config.local/gello.yaml
+          docker run --rm -e GELLO_CONFIG=/config/gello.yaml -v "$PWD/config.local:/config:ro" -v "$PWD/ci-data:/data" "$IMAGE" lerobot-ros-doctor --skip-hardware --skip-ros-graph
           docker run --rm "$IMAGE" python -m pip check
           docker run --rm "$IMAGE" ros2 doctor --report
       - name: Test development target

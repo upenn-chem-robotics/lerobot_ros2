@@ -1,13 +1,12 @@
 # Public-release migration
 
-This release consolidates executable helpers under `scripts/` and committed configuration templates under `config/` using the `*.example.yaml` suffix. Real machine configuration remains under ignored `config.local/`.
+The current repository already uses the public-release layout: executable helpers live under `scripts/`, committed configuration templates live under `config/` with the `*.example.yaml` suffix, and real machine configuration belongs under ignored `config.local/`.
 
-After extracting the update at the repository root, run:
+For an older checkout, migrate local files manually before updating:
 
-```bash
-./scripts/cleanup_public_release_layout.sh
-```
+1. Preserve real machine configuration under `config.local/`; never copy it into a tracked example.
+2. Remove obsolete duplicate scripts and templates only after confirming that their canonical replacements exist under `scripts/` and `config/`.
+3. Create ignored `compose.hardware.yaml` from `config/compose.hardware.example.yaml` and replace every placeholder locally.
+4. Inspect `git status` before committing.
 
-The cleanup removes obsolete duplicate paths only after checking that the canonical replacements exist. Review its output, then inspect `git status`. Preserve real configuration under `config.local/`; never copy it back into a tracked example.
-
-Audit the complete Git history with Gitleaks because replacing the current tree does not erase earlier private inventory. Review license ownership with all contributors. Create ignored `compose.hardware.yaml` from `config/compose.hardware.example.yaml` and never commit it. `constraints.txt` is only a compatibility redirect; use `environment.yml` and `requirements.lock.txt`.
+Audit the complete Git history with Gitleaks because replacing the current tree does not erase earlier private inventory. Review license ownership with all contributors. `constraints.txt` is only a compatibility redirect; use `environment.yml` and `requirements.lock.txt`.

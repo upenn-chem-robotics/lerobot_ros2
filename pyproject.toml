@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot-ros2"
 version = "0.1.0"
-description = "Recording, deploy, export and visualization utilities for UR3e bimanual teleoperation on top of huggingface/lerobot."
+description = "Independent ROS 2 interoperability and research utilities for LeRobot-based robot-learning workflows."
 requires-python = ">=3.10"
 readme = "README.md"
+license = {file = "LICENSE"}
 # ``lerobot`` (huggingface/lerobot) is deliberately NOT declared here: it is
 # installed separately (editable, from a pinned commit) in the Docker image
 # and we don't want pip to pull a PyPI version over the top of it.

@@ -30,7 +30,7 @@ Replace every `REPLACE_*` value before running a hardware workflow. Never commit
 
 The Compose services use these primary variables:
 
-- `GELLO_CONFIG`: path to the active configuration, normally `/config.local/gello.yaml`
+- `GELLO_CONFIG`: path to the active configuration inside containers, normally `/config/gello.yaml`
 - `HF_HOME`: Hugging Face cache location
 - `TORCH_HOME`: Torch cache location
 - `UID` and `GID`: host identity used for non-root container files

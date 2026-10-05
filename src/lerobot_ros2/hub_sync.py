@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # config.local/hf-backup.yaml lives at the repo root; this file is at
 # <repo>/src/lerobot_ros2/hub_sync.py, so parents[2] is the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "hf_backup.yaml"
+DEFAULT_CONFIG_PATH = _REPO_ROOT / "config.local" / "hf-backup.yaml"
 
 # Env var to opt in to auto-push after record/dagger/train (e.g. ``LEROBOT_HF_PUSH=1``).
 PUSH_ENV_VAR = "LEROBOT_HF_PUSH"
