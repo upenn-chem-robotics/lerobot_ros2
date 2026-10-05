@@ -17,8 +17,9 @@ license = {file = "LICENSE"}
 # 10 modules, and ``lerobot`` hard-requires torch>=2.7 anyway, so there is no
 # install in which they are genuinely absent.
 #
-# ``gradio``/``matplotlib`` (viz) and ``evdev`` (pedal) ARE genuinely optional --
-# only the visualizers and the foot pedal need them. See README "Install".
+# ``gradio`` is a runtime dependency because the installed lerobot-ros-app
+# console entry point imports it. ``matplotlib`` (additional visualization) and
+# ``evdev`` (foot pedal support) remain optional.
 dependencies = [
     "numpy",
     "opencv-python",
@@ -30,10 +31,11 @@ dependencies = [
     "huggingface_hub>=0.26",
     "torch",
     "torchvision",
+    "gradio>=5,<7",
 ]
 
 [project.optional-dependencies]
-viz = ["gradio", "matplotlib"]
+viz = ["matplotlib"]
 pedal = ["evdev"]
 all = ["lerobot-ros2[viz,pedal]"]
 # Pinned so a ruff release cannot turn a green checkout red on its own.

@@ -26,7 +26,7 @@ Remove every `REPLACE_*` value before camera or robot workflows. This preflight 
 
 ## Configuration model
 
-All committed configuration templates live in `config/` and end in `*.example.yaml`. Copy a template to its documented ignored runtime location before editing it; do not run hardware workflows directly from an example file.
+Generic copy-and-edit templates live in `config/` and end in `*.example.yaml`. Supported configurations under `profiles/` use their runtime filenames and are copied into the documented ignored runtime locations. Do not run hardware workflows directly from a generic example file.
 
 Committed files are examples and defaults. Local configuration belongs under `config.local/` and is mounted read-only at `/config`. Datasets and outputs belong under the host `data/` directory and are mounted at `/data`.
 

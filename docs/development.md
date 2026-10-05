@@ -8,7 +8,6 @@
 - `packages/`: separately distributed policy plugins
 - `tests/`: unit and hardware-free integration tests
 - `scripts/`: release, validation, camera-support, backup, and container-entrypoint scripts
-- `examples/`: minimal comment-free onboarding configuration
 - `config/*.example.yaml`: annotated public configuration templates
 - `docs/`: public user and contributor documentation
 

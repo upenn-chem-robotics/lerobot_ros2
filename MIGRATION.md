@@ -9,4 +9,4 @@ For an older checkout, migrate local files manually before updating:
 3. Create ignored `compose.hardware.yaml` from `config/compose.hardware.example.yaml` and replace every placeholder locally.
 4. Inspect `git status` before committing.
 
-Audit the complete Git history with Gitleaks because replacing the current tree does not erase earlier private inventory. Review license ownership with all contributors. `constraints.txt` is only a compatibility redirect; use `environment.yml` and `requirements.lock.txt`.
+Audit the complete Git history with Gitleaks because replacing the current tree does not erase earlier private inventory. Review license ownership with all contributors. `constraints.txt` has been removed; use `environment.yml` and `requirements.lock.txt`.

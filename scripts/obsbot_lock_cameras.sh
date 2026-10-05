@@ -21,9 +21,8 @@
 # Run this at the START of every recording / deploy session, AFTER the cameras
 # are plugged in and BEFORE `lerobot-ros-record` / `lerobot-ros-deploy`.
 #
-# This script and config.local/gello.yaml are complements, not alternatives: gello.yaml
-# owns every standard V4L2 control, this owns the SDK-only ones. See the
-# "gello.yaml vs obsbot-cli" section of README.md for the full split.
+# This script and config.local/gello.yaml are complements, not alternatives:
+# gello.yaml owns standard V4L2 controls; this script owns SDK-only controls.
 #
 # Usage:
 #   scripts/obsbot_lock_cameras.sh
@@ -53,8 +52,8 @@ if [[ -z "$CLI" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
   for cand in \
-    "$PROJECT_ROOT/third_party/obsbot-meetse-cli/target/release/obsbot-cli" \
-    "$PROJECT_ROOT/third_party/obsbot-meetse-cli/target/debug/obsbot-cli"; do
+    "$PROJECT_ROOT/third_party/obsbot-cli/target/release/obsbot-cli" \
+    "$PROJECT_ROOT/third_party/obsbot-cli/target/debug/obsbot-cli"; do
     [[ -x "$cand" ]] && CLI="$cand" && break
   done
 fi

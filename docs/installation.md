@@ -28,7 +28,12 @@ Cone mode includes repository-root files alongside the selected directories. Fil
 For the lab bimanual UR3 and Robotiq system, copy the supported profile:
 
 ```bash
+mkdir -p config.local data
+cp profiles/ur_robotiq_bimanual/gello.yaml config.local/gello.yaml
+cp profiles/ur_robotiq_bimanual/compose.hardware.yaml compose.hardware.yaml
 ```
+
+Replace every `REPLACE_*` device path in the copied files with the stable `/dev/v4l/by-id/` and `/dev/input/by-id/` paths for this host before using hardware.
 
 For another robot or site, start from the generic templates:
 

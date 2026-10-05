@@ -127,10 +127,12 @@ Do not point `--dst` at the source dataset.
 ```bash
 docker compose run --rm tools \
   lerobot-ros-reorient \
-  --src /data/<dataset>
+  --src /data/<source-dataset> \
+  --dst /data/<reoriented-dataset> \
+  --camera <camera-name>:<episode-spec>
 ```
 
-This command operates from the dataset metadata and configured orientation logic. Preserve a backup before any in-place-derived transformation.
+Use a camera short name reported by `lerobot-ros-reorient --src /data/<source-dataset> --report`. The episode specification can be a single episode, a comma-separated list, a range, or `all`. The destination must differ from the source.
 
 ## Downsample a dataset
 

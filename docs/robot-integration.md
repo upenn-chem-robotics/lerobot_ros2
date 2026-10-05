@@ -94,13 +94,12 @@ Keep these machine-local values in the robot launch arguments and deployment con
 
 ## 3. Start the released robot runtime
 
-Create the long-lived container once, or start the existing container:
+Create the long-lived container once, or start the existing container. Use host networking for the ROS and robot network path, but do not grant blanket privileged access. Add only reviewed device mappings, groups, or Linux capabilities when the driver actually requires them:
 
 ```bash
 docker start ur_robotiq || \
   docker run -dit \
     --net host \
-    --privileged \
     --name ur_robotiq \
     --entrypoint bash \
     ghcr.io/penzottimattia/ur_robotiq:gello

@@ -1,4 +1,0 @@
-# Deprecated compatibility file.
-# Docker uses requirements.lock.txt for pip-only packages and environment.yml
-# for Conda, ROS, and native libraries. Do not add new pins here.
--c requirements.lock.txt

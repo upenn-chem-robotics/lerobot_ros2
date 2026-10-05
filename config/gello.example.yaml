@@ -1,188 +1,39 @@
+# Minimal generic template. For the supported lab setup, copy the profile under
+# profiles/ur_robotiq_bimanual/ instead of editing this file.
+# Replace every REPLACE_* value before use.
 arms:
   left:
-    action_topic: "/REPLACE_LEFT_ACTION_TOPIC"
-    state_topic: "/REPLACE_LEFT_STATE_TOPIC"
+    action_topic: /REPLACE_LEFT_ARM_CONTROLLER/commands
+    state_topic: /REPLACE_LEFT_STATE_BROADCASTER/joint_states
+    gripper_joint: REPLACE_LEFT_GRIPPER_JOINT
   right:
-    action_topic: "/REPLACE_RIGHT_ACTION_TOPIC"
-    state_topic: "/REPLACE_RIGHT_STATE_TOPIC"
+    action_topic: /REPLACE_RIGHT_ARM_CONTROLLER/commands
+    state_topic: /REPLACE_RIGHT_STATE_BROADCASTER/joint_states
+    gripper_joint: REPLACE_RIGHT_GRIPPER_JOINT
 
 services:
   control_mode:
-    - "/REPLACE_LEFT_CONTROL_MODE_SERVICE"
-    - "/REPLACE_RIGHT_CONTROL_MODE_SERVICE"
-  # Optional empty services that return only once Gello has resumed publishing
-  # after a mode transition has been requested.
-  # If omitted, record.py derives them from control_mode by replacing
-  # "/set_parameters" with "/transition_ready".
+    - /REPLACE_LEFT_GELLO_OFFSET_NODE/set_parameters
+    - /REPLACE_RIGHT_GELLO_OFFSET_NODE/set_parameters
   transition_ready:
-    - "/REPLACE_LEFT_TRANSITION_SERVICE"
-    - "/REPLACE_RIGHT_TRANSITION_SERVICE"
+    - /REPLACE_LEFT_GELLO_OFFSET_NODE/wait_for_mode_transition
+    - /REPLACE_RIGHT_GELLO_OFFSET_NODE/wait_for_mode_transition
 
-# In ROTATE_CW / ROTATE_CCW mode (foot pedal RIGHT / keyboard 'm'), only this
-# arm rotates wrist_3 via its Gello gripper. Every other arm is frozen in place
-# (holds ALL joints, including wrist_3) for the duration of the rotation, then
-# resumes NORMAL Gello follow as soon as the mode cycles back to NORMAL. The
-# name is matched against each control_mode service path above, so "left"
-# selects "/REPLACE_LEFT_CONTROL_MODE_SERVICE". Set to null (or remove this
-# key) to rotate every arm together — the legacy behaviour.
-rotation_arm: REPLACE_ROTATION_ARM
-
-# Which arm follows Gello during each subtask of a long-horizon episode, in
-# order (index 0 is the first subtask). Only consulted when record.py runs with
-# `--pedal-right-action subtask`: the RIGHT foot pedal then advances the
-# per-frame `subtask_index` label instead of cycling ROTATE_CW/ROTATE_CCW, and
-# every arm that is not listed for the current subtask is held at control_mode
-# IDLE. An IDLE follower keeps its last commanded pose, so the operator can let
-# go of that Gello leader entirely, and the recorded action column for that arm
-# is a constant for the duration.
-#
-# `arm` is matched against the recorded arm keys (`arms:` above). `name` is
-# optional and purely for the operator: it is shown on the preview overlay as
-# "step 3/6 solid (right)", which can be checked against the bench at a glance
-# in a way a bare "step 3/6" cannot. Entries may also be bare arm names
-# (`- left`) if you don't want names.
-#
-# The list length is the default for `--subtask-count`. Remove the key (or pass
-# an empty list) to keep every arm following Gello for the whole episode.
-subtask_arms:
-  - {arm: left, name: funnel}
-  - {arm: left, name: paper}
-  - {arm: right, name: rod}
-  - {arm: right, name: pour}
-
-  # - {arm: left,  name: sep funnel}
-  # - {arm: left,  name: funnel on}
-  # - {arm: right, name: liquid1}
-  # - {arm: right, name: liquid2}
-  # - {arm: right, name: funnel off}
-  # - {arm: right, name: septum on}
-
-use_reset_client: false
-
-# Joints whose raw /joint_states readings may drift by multiples of 2π across
-# episodes (UR3e wrist_3 is the canonical case — see bimanual_controllers.yaml,
-# where it has angle_wraparound: true). Each listed suffix is matched against
-# the tail of every joint name returned by the state broadcaster, so the same
-# entry covers "left_wrist_3_joint" and "right_wrist_3_joint" automatically.
-#
-# At recording time, the first state frame of each episode defines an offset
-# (q0 - wrap_pi(q0)) that is a multiple of 2π, and both the state and action
-# columns of the matching joints have that offset subtracted for every frame
-# of the episode. This keeps the dataset inside a small, revolution-free band
-# near zero without changing feature dimensions. Deploy is not affected — the
-# operator is responsible for parking wrist_3 within [-π, π] before replay.
-# Pass an empty list ([]) to disable the feature entirely.
-wrap_joints:
-  - wrist_3_joint
-
-# After RobotHomeSender publishes the home JointState, it reads the current
-# joint angles and walks any wrap-joint (see `wrap_joints` above) whose
-# reading differs from its home target by more than `max_step` back to home
-# in fixed chunks — one JointState waypoint per `waypoint_stamp_s` seconds,
-# each shifted by up to `max_step` radians toward the target. Non-wrap
-# joints stay pinned at the home values during the unroll, so only the
-# wrist keeps moving. Omit this section to use the defaults below.
-unwrap:
-  max_step: 1.5708       # ~π/2 radians per waypoint (≈ 4 waypoints per full turn)
-  waypoint_stamp_s: 1.0  # JointState duration between waypoints
+# Disable UR-specific wrist wrapping unless this integration explicitly needs it.
+# The supported UR profile enables its required wrap joint itself.
+wrap_joints: []
 
 recording:
   hz: 10
-  # When true, each camera can undo sudden 180° firmware flips by comparing to the previous frame
-  # (see orientation_stabilize_180_vs_prev in src/lerobot_ros2/helper.py). Override per camera under left_cameras / etc.
-  stabilize_orientation_180: true
-  orientation_mae_delta_threshold: 20.0
-
-visualization:
-  camera_grid_columns: 2
-
-
-# Everything under `settings:` here (and per camera below) is a standard
-# V4L2/UVC control written with v4l2-ctl by apply_v4l2_settings() at every
-# camera open and every freeze-recovery reopen, then read back and verified.
-#
-# It does NOT cover the OBSBOT Meet SE's AI auto-framing, HDR or SDK digital
-# zoom — those live behind OBSBOT's proprietary SDK and are unreachable from
-# here, so scripts/obsbot_lock_cameras.sh must be run once per session to pin
-# them. Note auto-framing drives `zoom_continuous`, not `zoom_absolute`, so the
-# zoom pin below verifies fine while the image still drifts if the script was
-# skipped. Where the two overlap (focus), this file is the last writer and wins.
-# See the camera-control notes in the hardware documentation.
-camera_defaults:
-  settings:
-    auto_exposure: 1
-    white_balance_automatic: 0
-    # Focal length MUST be identical across every recorded frame and every
-    # inference rollout — vision policies may require precise
-    # positional consistency, and any focus/zoom drift silently corrupts the
-    # image geometry. These two controls kill both sources of drift for ALL
-    # cameras: continuous autofocus (focus breathing that looks like zooming)
-    # and any optical/digital zoom. Per-camera `focus_absolute` (below) then
-    # pins the fixed focus distance. apply_v4l2_settings() writes the auto
-    # gates first, then reads everything back and aborts recording if a value
-    # did not stick, so a camera can never silently record on auto.
-    focus_automatic_continuous: 0
-    zoom_absolute: 0
-    # backlight_compensation: 0
-    exposure_time_absolute: 100
-    white_balance_temperature: 4000
-    power_line_frequency: 1
-    gain: 1
-    brightness: 50
-    contrast: 50
-    saturation: 50
-    sharpness: 50
-    hue: 50
-    pan_absolute: 0
-    tilt_absolute: 0
-    pan_speed: 0
-    tilt_speed: 0
-
 
 left_cameras:
-  left_wrist_top:
-    port: /dev/v4l/by-id/REPLACE_RIGHT_CAMERA
-    settings:
-      # Autofocus + zoom are disabled via camera_defaults; this pins the fixed
-      # focus distance. Tune this integer (typically 0-255) until the target is
-      # tack-sharp at the working distance, then never change it between record
-      # and deploy.
-      focus_automatic_continuous: 0
-      zoom_absolute: 0
-      focus_absolute: 100
-  # left_wrist_bottom:
-  #   port: /dev/video9
-  #   settings:
-  #     focus_absolute: 100
+  left_wrist:
+    port: /dev/v4l/by-id/REPLACE_LEFT_WRIST_CAMERA
 
 right_cameras:
-  right_wrist_top:
-    port: /dev/v4l/by-id/REPLACE_LEFT_CAMERA
-    settings:
-      focus_automatic_continuous: 0
-      zoom_absolute: 0
-      focus_absolute: 100
-#   # right_wrist_bottom:
-#   #   port: /dev/video12
+  right_wrist:
+    port: /dev/v4l/by-id/REPLACE_RIGHT_WRIST_CAMERA
 
 other_cameras:
-  # perspective:
-  #   port: /dev/v4l/by-id/REPLACE_FRONT_CAMERA
-  #   settings:
-  #     focus_absolute: 20
   front:
     port: /dev/v4l/by-id/REPLACE_FRONT_CAMERA
-    settings:
-      # Front cam was the one observed auto-zooming during recording. Lock the
-      # autofocus + zoom explicitly here (belt-and-suspenders with the shared
-      # defaults) and pin a fixed focus. IMPORTANT: tune `focus_absolute` until
-      # the septum/needle is perfectly sharp at your working distance — the
-      # value that is sharp for the wrist cams is unlikely to match the front
-      # cam's distance.
-      focus_automatic_continuous: 0
-      zoom_absolute: 0
-      focus_absolute: 20
-  # back:
-  #   port: /dev/video8
-  #   settings:
-  #     focus_absolute: 20
