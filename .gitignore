@@ -1,5 +1,4 @@
 config.local/
-compose.hardware.yaml
 data/
 outputs/
 logs/
