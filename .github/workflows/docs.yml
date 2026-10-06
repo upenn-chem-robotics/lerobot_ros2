@@ -1,39 +1,27 @@
-name: Build or publish versioned documentation
+name: Publish versioned documentation
 
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
   workflow_dispatch:
-    inputs:
-      docs_version:
-        description: Mike version to build or publish
-        required: true
-        default: devel
-      repository_ref:
-        description: Git branch or tag shown in installation commands
-        required: true
-        default: devel
-      image_tag:
-        description: Container image tag shown in installation commands
-        required: true
-        default: latest
-      publish:
-        description: Publish to GitHub Pages and move the latest docs alias
-        required: true
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
-  packages: read
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: versioned-documentation
   cancel-in-progress: false
 
 jobs:
-  docs:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out complete repository history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -41,35 +29,177 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-docs.txt
 
       - name: Install documentation dependencies
+        run: python -m pip install -r requirements-docs.txt
+
+      - name: Resolve every release tag
+        id: releases
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-docs.txt
+          set -euo pipefail
+          git fetch --force --tags origin
+          mapfile -t tags < <(git tag --list 'v*' --sort=version:refname)
 
-      - name: Build documentation strictly
-        env:
-          DOCS_VERSION: ${{ inputs.docs_version }}
-          DOCS_REPOSITORY_REF: ${{ inputs.repository_ref }}
-          DOCS_IMAGE_TAG: ${{ inputs.image_tag }}
-        run: mkdocs build --strict
+          ((${#tags[@]} > 0)) || {
+            echo "No v* Git tags found" >&2
+            exit 1
+          }
 
-      - name: Verify referenced public image
-        if: ${{ inputs.publish }}
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: docker pull "ghcr.io/upenn-chem-robotics/lerobot-ros2:${IMAGE_TAG}"
+          printf '%s\n' "${tags[@]}" > "$RUNNER_TEMP/docs-tags.txt"
+          echo "default_version=${tags[-1]}" >> "$GITHUB_OUTPUT"
+          echo "Rebuilding from scratch: ${tags[*]}"
 
-      - name: Publish documentation
-        if: ${{ inputs.publish }}
-        env:
-          DOCS_VERSION: ${{ inputs.docs_version }}
-          DOCS_REPOSITORY_REF: ${{ inputs.repository_ref }}
-          DOCS_IMAGE_TAG: ${{ inputs.image_tag }}
+      - name: Create an empty local Mike branch
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mike deploy --push --update-aliases "$DOCS_VERSION" latest
-          mike set-default --push latest
+
+          empty_tree="$(git mktree </dev/null)"
+          root_commit="$(printf '%s\n' 'Initialize ephemeral documentation site' | git commit-tree "$empty_tree")"
+          git branch docs-pages-build "$root_commit"
+
+      - name: Rebuild every tagged version with Mike
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Tags may predate the Mike/Material selector configuration. Keep the
+          # publication configuration from the workflow revision and overlay it
+          # after each detached tag checkout.
+          cp mkdocs.yml "$RUNNER_TEMP/mkdocs-publication.yml"
+
+          while IFS= read -r tag; do
+            git checkout --detach "$tag"
+            cp "$RUNNER_TEMP/mkdocs-publication.yml" mkdocs.yml
+
+            export DOCS_VERSION="$tag"
+            export DOCS_REPOSITORY_REF="$tag"
+            export DOCS_IMAGE_TAG="$tag"
+
+            mkdocs build --strict
+            mike deploy --branch docs-pages-build "$tag"
+          done < "$RUNNER_TEMP/docs-tags.txt"
+
+          default_version="${{ steps.releases.outputs.default_version }}"
+          mike alias --branch docs-pages-build --update-aliases "$default_version" latest
+          mike set-default --branch docs-pages-build latest
+
+      - name: Export the complete Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/pages"
+          git worktree add --detach "$RUNNER_TEMP/pages" docs-pages-build
+          rm -rf "$RUNNER_TEMP/pages/.git"
+
+      - name: Verify versions, aliases, and rendered selectors
+        env:
+          DEFAULT_VERSION: ${{ steps.releases.outputs.default_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "pages"
+          default_version = os.environ["DEFAULT_VERSION"]
+          versions = json.loads((root / "versions.json").read_text())
+          requested = {
+              line.strip()
+              for line in (Path(os.environ["RUNNER_TEMP"]) / "docs-tags.txt").read_text().splitlines()
+              if line.strip()
+          }
+          published = {entry["version"] for entry in versions}
+
+          assert requested == published, (
+              f"Version mismatch: missing={sorted(requested - published)}, "
+              f"unexpected={sorted(published - requested)}"
+          )
+
+          for version in sorted(requested):
+              index_path = root / version / "index.html"
+              assert index_path.is_file(), f"Missing version page: {index_path}"
+              assert index_path.stat().st_size > 0, f"Empty version page: {index_path}"
+
+          default_entry = next(
+              (entry for entry in versions if entry["version"] == default_version),
+              None,
+          )
+          assert default_entry is not None, f"Default version is not published: {default_version}"
+          assert "latest" in default_entry.get("aliases", []), (
+              f"latest is not assigned to {default_version}: {default_entry}"
+          )
+
+          latest_index = root / "latest" / "index.html"
+          assert latest_index.is_file(), "Missing latest/index.html"
+          assert latest_index.stat().st_size > 0, "Empty latest/index.html"
+          assert (root / "index.html").is_file(), "Missing root default redirect"
+
+          print("Published versions:", ", ".join(sorted(published)))
+          print("Default version:", default_version)
+          print("Aliases:", ", ".join(default_entry.get("aliases", [])))
+          PYTHON
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload complete versioned site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy complete versioned site to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  verify-live-site:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify selector on deployed Pages site
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${PAGE_URL%/}"
+          cache_buster="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            "$base/versions.json?deployment=$cache_buster" -o versions.json
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            "$base/latest/?deployment=$cache_buster" -o latest.html
+
+          python - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          versions = json.loads(Path("versions.json").read_text())
+          assert len(versions) >= 1, "Live versions.json contains no versions"
+          assert any("latest" in entry.get("aliases", []) for entry in versions), (
+              "Live versions.json has no latest alias"
+          )
+
+          latest = Path("latest.html")
+          assert latest.is_file() and latest.stat().st_size > 0, (
+              "Live latest page is missing or empty"
+          )
+          print("Live Mike metadata and latest page validation passed")
+          PYTHON

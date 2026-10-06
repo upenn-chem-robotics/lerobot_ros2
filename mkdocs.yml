@@ -7,6 +7,10 @@ repo_url: https://github.com/upenn-chem-robotics/lerobot_ros2
 plugins:
   - search
   - macros
+  - mike:
+      version_selector: true
+      alias_type: copy
+      canonical_version: latest
 
 theme:
   name: material
@@ -26,8 +30,6 @@ extra:
   image_tag: !ENV [DOCS_IMAGE_TAG, latest]
   version:
     provider: mike
-    default: latest
-    alias: true
 
 nav:
   - Start here:
