@@ -14,8 +14,10 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_FILE") 2>&1
 
+COMPOSE_TEST_ROOT=""
 cleanup() {
   local status=$?
+  if [[ -n "$COMPOSE_TEST_ROOT" ]]; then rm -rf "$COMPOSE_TEST_ROOT"; fi
   printf '\nLog: %s\n' "$LOG_FILE"
   if (( status == 0 )); then
     echo 'NO-HARDWARE INTEGRATION TESTS: PASS'
@@ -40,6 +42,23 @@ fi
 
 docker run --rm "$RUNTIME_IMAGE" python -m pip check
 docker run --rm "$RUNTIME_IMAGE" ros2 doctor --report
+
+# Verify that Compose runs the released image as the invoking host user and that
+# files created through bind mounts retain that user's numeric ownership.
+COMPOSE_TEST_ROOT="$(mktemp -d)"
+mkdir -p "$COMPOSE_TEST_ROOT"/{data,config,cache/huggingface,cache/torch}
+cp config/gello.example.yaml "$COMPOSE_TEST_ROOT/config/gello.yaml"
+LEROBOT_ROS_IMAGE="${RUNTIME_IMAGE%:*}" \
+IMAGE_TAG="${RUNTIME_IMAGE##*:}" \
+LEROBOT_HOST_UID="$(id -u)" \
+LEROBOT_HOST_GID="$(id -g)" \
+LEROBOT_DATA="$COMPOSE_TEST_ROOT/data" \
+LEROBOT_CONFIG="$COMPOSE_TEST_ROOT/config" \
+LEROBOT_CACHE="$COMPOSE_TEST_ROOT/cache" \
+docker compose run --rm tools sh -eu -c \
+  'test "$(id -u)" = "$LEROBOT_HOST_UID"; test "$(id -g)" = "$LEROBOT_HOST_GID"; touch /data/ownership-test'
+test "$(stat -c %u "$COMPOSE_TEST_ROOT/data/ownership-test")" = "$(id -u)"
+test "$(stat -c %g "$COMPOSE_TEST_ROOT/data/ownership-test")" = "$(id -g)"
 
 # The tests are mounted read-only but execute against packages installed in the image.
 docker run --rm \

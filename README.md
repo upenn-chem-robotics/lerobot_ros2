@@ -20,10 +20,15 @@ The [documentation overview](docs/index.md) helps you choose a workflow. Platfor
 
 ## Minimal released-runtime check
 
-A release consists of a matching Git tag and container-image tag. Follow [Install a released version](docs/installation.md) for the canonical installation procedure and image coordinates from the release notes. After installation, run the software-only preflight:
+A published release consists of a matching Git tag and container-image tag. The locally built development documentation instead uses repository branch `devel` with image tag `latest`. Follow [Install a released version](docs/installation.md) for the canonical installation procedure and image coordinates from the release notes. After installation, run the software-only preflight:
 
 ```bash
-export UID="$(id -u)" GID="$(id -g)"
+mkdir -p data config.local .cache/lerobot/{huggingface,torch}
+cp config/gello.example.yaml config.local/gello.yaml
+cat > .env <<EOF
+LEROBOT_HOST_UID=$(id -u)
+LEROBOT_HOST_GID=$(id -g)
+EOF
 docker compose pull tools
 docker compose run --rm tools \
   lerobot-ros-doctor --skip-hardware --skip-ros-graph

@@ -28,7 +28,11 @@ Before editing, build the development service and run the baseline checks. After
 ## Development environment
 
 ```bash
-export UID="$(id -u)" GID="$(id -g)"
+mkdir -p data config.local .cache/lerobot/{huggingface,torch}
+cat > .env <<EOF
+LEROBOT_HOST_UID=$(id -u)
+LEROBOT_HOST_GID=$(id -g)
+EOF
 docker compose build dev
 docker compose run --rm dev pytest
 docker compose run --rm dev ruff check .
@@ -73,6 +77,10 @@ A documentation change should include working internal links, commands that matc
 
 Do not commit local configuration, data, outputs, logs, checkpoints, tokens, robot addresses, private inventories, or participant information. Use sanitized examples and keep site-specific material under ignored paths.
 
+## Verification and development publication
+
+Follow [VERIFICATION.md](verification.md) as the single contract for identity checks, hardware-free integration, public-image verification, local Mike preview, the `devel` branch update, and publication of the traceable and `latest` development image tags.
+
 ## Quick verification flows
 
 Before opening a pull request, run the verification flow that covers the changed components. Hardware-facing changes also require the controlled checks in [Hardware and safety](hardware-and-safety.md).
@@ -104,11 +112,7 @@ This builds the runtime and development images, runs `pip check`, runs the ROS d
 
 ### Public bundle or image change
 
-```bash
-bash scripts/verify_public_release.sh
-```
-
-Use this when changing the Dockerfile, Compose files, packaging metadata, release bundle contents, entrypoint, dependency locks, or published-image behavior. Review the generated logs and resolve every failure before publishing. Retain the logs with the exact source and image identifiers to which the verification applies.
+Follow [VERIFICATION.md](verification.md). It is the authoritative verification and development-publication contract. Review the generated logs and resolve every failure before publishing. Retain the logs with the exact source and image identifiers to which the verification applies.
 
 ### Hardware-facing change
 

@@ -21,7 +21,9 @@ theme:
     - toc.follow
 
 extra:
-  release_tag: !ENV [DOCS_VERSION, development]
+  docs_version: !ENV [DOCS_VERSION, devel]
+  repository_ref: !ENV [DOCS_REPOSITORY_REF, devel]
+  image_tag: !ENV [DOCS_IMAGE_TAG, latest]
   version:
     provider: mike
     default: latest
@@ -40,6 +42,7 @@ nav:
       - Configuration reference: configuration.md
   - Contribute and release:
       - Development: development.md
+      - Verification and release: verification.md
 
 strict: true
 markdown_extensions:
