@@ -21,6 +21,8 @@ x-common: &common
 services:
   tools:
     <<: *common
+    ports:
+      - "127.0.0.1:${LEROBOT_APP_PORT:-7860}:7860"
     command: ["lerobot-ros-doctor", "--skip-ros-graph", "--skip-hardware"]
 
   gpu:
