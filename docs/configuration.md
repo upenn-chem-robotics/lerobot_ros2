@@ -57,7 +57,7 @@ Replace every `REPLACE_*` value before running a hardware workflow. Never commit
 - `data/`: ignored host dataset location
 - `/data`: dataset and output location inside containers
 - `release-logs/`: ignored verification output
-- named Hugging Face and Torch caches: reusable downloaded artifacts
+- `.cache/lerobot/huggingface/` and `.cache/lerobot/torch/`: ignored, host-owned reusable download caches
 
 ## Environment variables
 
@@ -66,14 +66,19 @@ The Compose services use these primary variables:
 - `GELLO_CONFIG`: path to the active configuration inside containers, normally `/config/gello.yaml`
 - `HF_HOME`: Hugging Face cache location
 - `TORCH_HOME`: Torch cache location
-- `UID` and `GID`: host identity used for non-root container files
+- `LEROBOT_HOST_UID` and `LEROBOT_HOST_GID`: current host identity used as the container process identity, so files created in bind mounts remain owned by that host user
 - ROS variables such as `ROS_DOMAIN_ID` when isolating a graph
 
-Set host identity before running Compose:
+Set the current host identity for Compose in the repository `.env` file:
 
 ```bash
-export UID="$(id -u)" GID="$(id -g)"
+cat > .env <<EOF
+LEROBOT_HOST_UID=$(id -u)
+LEROBOT_HOST_GID=$(id -g)
+EOF
 ```
+
+Compose uses these values for the runtime `user`, not as image build arguments. Consequently, files created below the host `data/` and `.cache/lerobot/` bind mounts have the current user's numeric UID and GID. Keep any existing image settings in `.env` when updating this file.
 
 ## Hardware override
 

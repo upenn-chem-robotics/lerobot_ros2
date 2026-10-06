@@ -1,6 +1,6 @@
 # Installation
 
-> **Scope:** Install a published release. Source development and release verification are covered in [Development](development.md).
+> **Scope:** Install the documentation channel shown below. By default, a local documentation build uses repository branch `devel` with container image tag `latest`. Published release documentation overrides both values with the matching release tag. Source development and release verification are covered in [Development](development.md).
 
 A **Docker image** is the packaged software that Docker downloads and runs. An image **tag** identifies the published project version. A Compose **service** selects how that image is run for tools, GPU work, or robot access. A **mount** makes a host directory, such as `data/`, visible inside the container.
 
@@ -20,13 +20,14 @@ The supported runtime is containerized. Do not combine the released image with h
 
 ### 1. Obtain the release files
 
-This page is for release `{{ release_tag }}`. The repository tag and container-image tag are both fixed to this documentation version:
+This documentation channel uses repository ref `{{ repository_ref }}` and container image tag `{{ image_tag }}`. They are deliberately separate: development documentation follows `devel` while running the `latest` development image; release documentation pins both to the same release tag.
 
 ```bash
-git clone --filter=blob:none --sparse --no-checkout \
-  --branch {{ release_tag }} --single-branch \
+git clone --filter=blob:none --no-checkout \
+  --branch {{ repository_ref }} --single-branch \
   https://github.com/upenn-chem-robotics/lerobot_ros2.git lerobot-ros2
 cd lerobot-ros2
+git sparse-checkout init --cone
 git sparse-checkout set docs config profiles
 git checkout
 ```
@@ -36,16 +37,17 @@ This checkout supplies `compose.yaml`, documentation, profiles, templates, licen
 ### 2. Prepare local directories and select the release
 
 ```bash
-mkdir -p data
-export UID="$(id -u)"
-export GID="$(id -g)"
-export LEROBOT_ROS_IMAGE="ghcr.io/upenn-chem-robotics/lerobot-ros2"
-export REPO_TAG="$(git describe --tags --exact-match)"
-export IMAGE_TAG="{{ release_tag }}"
-test "$REPO_TAG" = "$IMAGE_TAG"
+mkdir -p data config.local .cache/lerobot/{huggingface,torch}
+cp config/gello.example.yaml config.local/gello.yaml
+cat > .env <<EOF
+LEROBOT_HOST_UID=$(id -u)
+LEROBOT_HOST_GID=$(id -g)
+LEROBOT_ROS_IMAGE=ghcr.io/upenn-chem-robotics/lerobot-ros2
+IMAGE_TAG={{ image_tag }}
+EOF
+export REPO_REF="{{ repository_ref }}"
+git rev-parse --verify "$REPO_REF^{commit}" >/dev/null
 ```
-
-`{{ release_tag }}` is selected by the documentation version shown in the header. The equality check stops installation if the checked-out repository tag differs from the image tag. Avoid `latest`, because its meaning can change.
 
 Check what Docker will run:
 
@@ -53,7 +55,7 @@ Check what Docker will run:
 docker compose config --images
 ```
 
-**Continue when:** every displayed `lerobot-ros2` image uses the expected public image name and the `{{ release_tag }}` tag.
+**Continue when:** every displayed `lerobot-ros2` image uses the expected public image name and the `{{ image_tag }}` tag.
 
 ### 3. Download and check the tools service
 
@@ -108,7 +110,7 @@ Released images are public and the release checkout and image tag are intended t
 
 **What you see:** `docker compose config --images` shows a different tag from the checked-out release, or the documented command is missing.
 
-**Fix:** select the intended documentation version, check out its exact Git tag, and set `IMAGE_TAG` to `{{ release_tag }}`. Verify that `REPO_TAG` and `IMAGE_TAG` are equal, run `docker compose config --images` again, and pull the required service. Do not edit files inside the container.
+**Fix:** select repository ref `{{ repository_ref }}` and image tag `{{ image_tag }}` exactly as rendered by this documentation channel. Run `docker compose config --images` again and pull the required service. For release documentation, the ref and image tag must be the same release tag; for development documentation, they are `devel` and `latest`. Do not edit files inside the container.
 
 ### Docker cannot download the image
 
@@ -117,19 +119,6 @@ Released images are public and the release checkout and image tag are intended t
 **Check:** compare the public image name and tag with the release notes and the checked-out Git tag. Also confirm that Docker can access the network.
 
 **Fix:** correct the image name or tag and retry. If the exact released public image is unavailable, stop and report the release issue rather than substituting another image.
-
-### You cannot edit files created by Docker
-
-**What you see:** outputs exist on the host but your normal user cannot edit or delete them.
-
-**Fix:** set the host identity before running Compose:
-
-```bash
-export UID="$(id -u)"
-export GID="$(id -g)"
-```
-
-Create a new test output before changing ownership of existing datasets.
 
 ### Docker cannot use the GPU
 

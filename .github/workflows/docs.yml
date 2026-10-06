@@ -1,15 +1,29 @@
-name: Build and deploy versioned documentation
+name: Build or publish versioned documentation
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      docs_version:
+        description: Mike version to build or publish
+        required: true
+        default: devel
+      repository_ref:
+        description: Git branch or tag shown in installation commands
+        required: true
+        default: devel
+      image_tag:
+        description: Container image tag shown in installation commands
+        required: true
+        default: latest
+      publish:
+        description: Publish to GitHub Pages and move the latest docs alias
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  packages: read
 
 concurrency:
   group: versioned-documentation
@@ -18,7 +32,6 @@ concurrency:
 jobs:
   docs:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -36,16 +49,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-docs.txt
 
-      - name: Build development documentation
-        if: github.ref_type != 'tag'
+      - name: Build documentation strictly
         env:
-          DOCS_VERSION: development
+          DOCS_VERSION: ${{ inputs.docs_version }}
+          DOCS_REPOSITORY_REF: ${{ inputs.repository_ref }}
+          DOCS_IMAGE_TAG: ${{ inputs.image_tag }}
         run: mkdocs build --strict
 
-      - name: Publish tagged documentation
-        if: github.ref_type == 'tag'
+      - name: Verify referenced public image
+        if: ${{ inputs.publish }}
         env:
-          DOCS_VERSION: ${{ github.ref_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: docker pull "ghcr.io/upenn-chem-robotics/lerobot-ros2:${IMAGE_TAG}"
+
+      - name: Publish documentation
+        if: ${{ inputs.publish }}
+        env:
+          DOCS_VERSION: ${{ inputs.docs_version }}
+          DOCS_REPOSITORY_REF: ${{ inputs.repository_ref }}
+          DOCS_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

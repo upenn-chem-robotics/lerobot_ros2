@@ -16,6 +16,7 @@ DATA_DIR="$LOG_DIR/data-$STAMP"
 KEEP_IMAGES="${KEEP_RELEASE_IMAGES:-1}"
 TRIVY_TIMEOUT="${TRIVY_TIMEOUT:-20m}"
 COLD_BUILD="${COLD_RELEASE_BUILD:-0}"
+CACHE_IMAGE="${RELEASE_CACHE_IMAGE:-ghcr.io/upenn-chem-robotics/lerobot-ros2:latest}"
 NOTIFY_ON_FINISH="${NOTIFY_ON_FINISH:-1}"
 FAILURES=0
 WARNINGS=0
@@ -30,6 +31,7 @@ printf 'Runtime image: %s\n' "$IMAGE"
 printf 'Development image: %s\n' "$DEV_IMAGE"
 printf 'Log: %s\n' "$LOG_FILE"
 printf 'Cold build: %s\n' "$COLD_BUILD"
+printf 'Build cache image: %s\n' "$CACHE_IMAGE"
 printf 'Keep images: %s\n\n' "$KEEP_IMAGES"
 
 cleanup() {
@@ -149,7 +151,7 @@ for path in [
     tomllib.loads(path.read_text(encoding='utf-8'))
 for path in [
     root / 'environment.yml', root / 'compose.yaml', root / 'profiles/ur_robotiq_bimanual/gello.yaml', root / 'config/gello.example.yaml',
-    root / 'config/hf-backup.example.yaml', root / '.github/workflows/ci.yml',
+    root / 'config/hf-backup.example.yaml',
 ]:
     yaml.safe_load(path.read_text(encoding='utf-8'))
 print('Static parsing passed.')
@@ -160,7 +162,14 @@ run 'Docker Compose validation' docker compose config --quiet
 RUNTIME_READY=0
 DEV_READY=0
 BUILD_CACHE_ARGS=()
-if [[ "$COLD_BUILD" == "1" ]]; then BUILD_CACHE_ARGS+=(--no-cache); fi
+if [[ "$COLD_BUILD" == "1" ]]; then
+  BUILD_CACHE_ARGS+=(--no-cache)
+else
+  warn_run 'Pull latest image for build cache' docker pull "$CACHE_IMAGE"
+  if docker image inspect "$CACHE_IMAGE" >/dev/null 2>&1; then
+    BUILD_CACHE_ARGS+=(--cache-from "$CACHE_IMAGE")
+  fi
+fi
 if run 'Docker runtime image build' docker build "${BUILD_CACHE_ARGS[@]}" --progress=plain --target runtime -t "$IMAGE" .; then
   RUNTIME_READY=1
 fi
@@ -176,7 +185,8 @@ chmod -R a+rwX "$DATA_DIR" || true
 if (( RUNTIME_READY )); then
   run 'Runtime pip dependency check' docker run --rm "$IMAGE" python -m pip check
   run 'Runtime ROS doctor report' docker run --rm "$IMAGE" ros2 doctor --report
-  run 'Runtime application preflight' docker run --rm -e GELLO_CONFIG=/config/gello.yaml -v "$CONFIG_DIR:/config:ro" -v "$DATA_DIR:/data" "$IMAGE" lerobot-ros-doctor --skip-hardware --skip-ros-graph
+  run 'Runtime application preflight as host identity' docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GELLO_CONFIG=/config/gello.yaml -v "$CONFIG_DIR:/config:ro" -v "$DATA_DIR:/data" "$IMAGE" lerobot-ros-doctor --skip-hardware --skip-ros-graph
+  run 'Runtime bind-mount ownership check' bash -lc 'docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "'$DATA_DIR':/data" "'$IMAGE'" sh -eu -c "touch /data/ownership-test" && test "$(stat -c %u "'$DATA_DIR'/ownership-test")" = "$(id -u)" && test "$(stat -c %g "'$DATA_DIR'/ownership-test")" = "$(id -g)" && rm -f "'$DATA_DIR'/ownership-test"'
   run 'Console entry-point import smoke test' docker run --rm "$IMAGE" python -c "import importlib; from importlib.metadata import entry_points; eps=[e for e in entry_points(group='console_scripts') if e.module.startswith('lerobot_ros2')]; assert eps; [importlib.import_module(e.module) for e in eps]; print('Imported', len(eps), 'console scripts')"
   run 'Policy distribution discovery' docker run --rm "$IMAGE" python -c "from importlib.metadata import distributions; from packaging.utils import canonicalize_name; n={canonicalize_name(d.metadata['Name']) for d in distributions() if d.metadata['Name']}; e={canonicalize_name(x) for x in ('lerobot-policy-strided-diffusion','lerobot-policy-action-history-diffusion')}; print('missing',e-n); assert not e-n"
 else
@@ -184,7 +194,8 @@ else
 fi
 
 if (( DEV_READY )); then
-  run 'Pytest in development image' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -o cache_dir=/tmp/pytest-cache --ignore=tests/integration
+  run 'Focused Compose identity pytest' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -q -o cache_dir=/tmp/pytest-identity tests/test_compose_identity.py
+  run 'Pytest in development image' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -o cache_dir=/tmp/pytest-cache --ignore=tests/integration --ignore=tests/test_compose_identity.py
   run 'Hardware-free ROS graph and CLI execution tests' docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -e ROS_DOMAIN_ID=127 -e ROS_LOCALHOST_ONLY=1 -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" pytest -q -o cache_dir=/tmp/pytest-integration tests/integration/test_ros_graph_smoke.py tests/integration/test_console_scripts.py
   run 'Ruff in development image' docker run --rm -v "$ROOT:/workspace:ro" -w /workspace "$DEV_IMAGE" ruff check --no-cache .
 else

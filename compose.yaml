@@ -3,23 +3,26 @@ x-common: &common
   build:
     context: .
     target: runtime
-    args:
-      APP_UID: ${UID:-1000}
-      APP_GID: ${GID:-1000}
   image: ${LEROBOT_ROS_IMAGE:-lerobot-ros2}:${IMAGE_TAG:-dev}
+  user: "${LEROBOT_HOST_UID:-1000}:${LEROBOT_HOST_GID:-1000}"
   init: true
   environment:
+    HOME: /tmp
+    LEROBOT_HOST_UID: ${LEROBOT_HOST_UID:-1000}
+    LEROBOT_HOST_GID: ${LEROBOT_HOST_GID:-1000}
     GELLO_CONFIG: /config/gello.yaml
     ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
   volumes:
     - ${LEROBOT_DATA:-./data}:/data
     - ${LEROBOT_CONFIG:-./config.local}:/config:ro
-    - hf-cache:/cache/huggingface
-    - torch-cache:/cache/torch
+    - ${LEROBOT_CACHE:-./.cache/lerobot}/huggingface:/cache/huggingface
+    - ${LEROBOT_CACHE:-./.cache/lerobot}/torch:/cache/torch
 
 services:
   tools:
     <<: *common
+    ports:
+      - "127.0.0.1:${LEROBOT_APP_PORT:-7860}:7860"
     command: ["lerobot-ros-doctor", "--skip-ros-graph", "--skip-hardware"]
 
   gpu:
@@ -39,17 +42,10 @@ services:
     build:
       context: .
       target: dev
-      args:
-        APP_UID: ${UID:-1000}
-        APP_GID: ${GID:-1000}
     volumes:
       - .:/workspace
       - ${LEROBOT_DATA:-./data}:/data
       - ${LEROBOT_CONFIG:-./config.local}:/config:ro
-      - hf-cache:/cache/huggingface
-      - torch-cache:/cache/torch
+      - ${LEROBOT_CACHE:-./.cache/lerobot}/huggingface:/cache/huggingface
+      - ${LEROBOT_CACHE:-./.cache/lerobot}/torch:/cache/torch
     command: ["bash"]
-
-volumes:
-  hf-cache:
-  torch-cache:

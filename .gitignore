@@ -11,6 +11,7 @@ build/
 dist/
 .eggs/
 .venv/
+.cache/lerobot/
 .pytest_cache/
 .ruff_cache/
 config/camera_probes/*.yaml
