@@ -79,7 +79,7 @@ Do not commit local configuration, data, outputs, logs, checkpoints, tokens, rob
 
 ## Verification and development publication
 
-Follow [VERIFICATION.md](verification.md) as the single contract for identity checks, hardware-free integration, public-image verification, local Mike preview, the `devel` branch update, and publication of the traceable and `latest` development image tags.
+Follow the repository-root `VERIFICATION.md` as the single contract for identity checks, hardware-free integration, public-image verification, local Mike preview, the `devel` branch update, and publication of the traceable and `latest` development image tags.
 
 ## Quick verification flows
 
@@ -112,7 +112,7 @@ This builds the runtime and development images, runs `pip check`, runs the ROS d
 
 ### Public bundle or image change
 
-Follow [VERIFICATION.md](verification.md). It is the authoritative verification and development-publication contract. Review the generated logs and resolve every failure before publishing. Retain the logs with the exact source and image identifiers to which the verification applies.
+Follow the repository-root `VERIFICATION.md`. It is the authoritative verification and development-publication contract. Review the generated logs and resolve every failure before publishing. Retain the logs with the exact source and image identifiers to which the verification applies.
 
 ### Hardware-facing change
 

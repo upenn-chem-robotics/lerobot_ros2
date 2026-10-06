@@ -49,8 +49,6 @@ export REPO_REF="{{ repository_ref }}"
 git rev-parse --verify "$REPO_REF^{commit}" >/dev/null
 ```
 
-The documentation build selects repository ref `{{ repository_ref }}` and image tag `{{ image_tag }}` independently. The `devel`/`latest` pair is intentionally moving and is for development validation; a published release pins both values to its immutable release tag. Compose runs the container process with `LEROBOT_HOST_UID` and `LEROBOT_HOST_GID`. Files it creates in the bind-mounted `data/` and cache directories therefore use the current host user's numeric ownership. The explicit names also avoid Bash's read-only `UID` variable.
-
 Check what Docker will run:
 
 ```bash
@@ -70,25 +68,6 @@ docker compose run --rm tools \
 **Software preflight passed:** the image downloads, the doctor command exits successfully, and it does not report a failed packaged-application or mount check.
 
 This does not validate a dataset, GPU, camera, ROS graph, checkpoint, or robot.
-
-The software-only doctor still requires two mounts: a readable `/config/gello.yaml` and a writable `/data`. The preparation step creates both host paths and installs the generic example configuration. A Tini subreaper warning may appear because Compose and the image both initialize Tini; it is informational and is not one of the doctor's required checks.
-
-If the doctor reports `Config file not found: /config/gello.yaml`, verify the local file and rendered mount:
-
-```bash
-test -r config.local/gello.yaml
-docker compose config | grep -A3 '/config'
-```
-
-If it reports a failed `/data` check, verify that Compose resolved the current host identity and that the bind mount is writable:
-
-```bash
-test "$(docker compose run --rm tools id -u)" = "$(id -u)"
-test "$(docker compose run --rm tools id -g)" = "$(id -g)"
-docker compose run --rm tools sh -c   'touch /data/.write-test && rm /data/.write-test'
-```
-
-Do not fix this with `sudo chown` or `chmod 777`. Recreate `.env` with `LEROBOT_HOST_UID=$(id -u)` and `LEROBOT_HOST_GID=$(id -g)`, ensure `data/` is owned and writable by the current user, then retry.
 
 ## GPU addition
 
@@ -140,21 +119,6 @@ Released images are public and the release checkout and image tag are intended t
 **Check:** compare the public image name and tag with the release notes and the checked-out Git tag. Also confirm that Docker can access the network.
 
 **Fix:** correct the image name or tag and retry. If the exact released public image is unavailable, stop and report the release issue rather than substituting another image.
-
-### You cannot edit files created by Docker
-
-**What you see:** outputs exist on the host but your normal user cannot edit or delete them.
-
-**Fix:** set the runtime identity in Compose's `.env` file:
-
-```bash
-cat > .env <<EOF
-LEROBOT_HOST_UID=$(id -u)
-LEROBOT_HOST_GID=$(id -g)
-EOF
-```
-
-Recreate the container and create a new test output. Files written to `data/` should report the same numeric owner as `id -u` and `id -g`; do not recursively change ownership of an existing dataset.
 
 ### Docker cannot use the GPU
 

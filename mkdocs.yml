@@ -42,7 +42,6 @@ nav:
       - Configuration reference: configuration.md
   - Contribute and release:
       - Development: development.md
-      - Verification and release: verification.md
 
 strict: true
 markdown_extensions:
