@@ -20,11 +20,11 @@ The supported runtime is containerized. Do not combine the released image with h
 
 ### 1. Obtain the release files
 
-Replace `<release-tag>` with the tag shown in the release notes:
+This page is for release `{{ release_tag }}`. The repository tag and container-image tag are both fixed to this documentation version:
 
 ```bash
 git clone --filter=blob:none --sparse --no-checkout \
-  --branch <release-tag> --single-branch \
+  --branch {{ release_tag }} --single-branch \
   https://github.com/upenn-chem-robotics/lerobot_ros2.git lerobot-ros2
 cd lerobot-ros2
 git sparse-checkout set docs config profiles
@@ -40,10 +40,12 @@ mkdir -p data
 export UID="$(id -u)"
 export GID="$(id -g)"
 export LEROBOT_ROS_IMAGE="ghcr.io/upenn-chem-robotics/lerobot-ros2"
-export IMAGE_TAG="v0.1.0"
+export REPO_TAG="$(git describe --tags --exact-match)"
+export IMAGE_TAG="{{ release_tag }}"
+test "$REPO_TAG" = "$IMAGE_TAG"
 ```
 
-This documentation is pinned to `ghcr.io/upenn-chem-robotics/lerobot-ros2:v0.1.0`. Keep the checked-out Git release and image tag aligned. Avoid `latest`, because its meaning can change.
+`{{ release_tag }}` is selected by the documentation version shown in the header. The equality check stops installation if the checked-out repository tag differs from the image tag. Avoid `latest`, because its meaning can change.
 
 Check what Docker will run:
 
@@ -51,7 +53,7 @@ Check what Docker will run:
 docker compose config --images
 ```
 
-**Continue when:** every displayed `lerobot-ros2` image uses the expected public image name and release tag.
+**Continue when:** every displayed `lerobot-ros2` image uses the expected public image name and the `{{ release_tag }}` tag.
 
 ### 3. Download and check the tools service
 
@@ -106,7 +108,7 @@ Released images are public and the release checkout and image tag are intended t
 
 **What you see:** `docker compose config --images` shows a different tag from the checked-out release, or the documented command is missing.
 
-**Fix:** set `IMAGE_TAG` to the checkout's release tag, run `docker compose config --images` again, and pull the required service. Do not edit files inside the container.
+**Fix:** select the intended documentation version, check out its exact Git tag, and set `IMAGE_TAG` to `{{ release_tag }}`. Verify that `REPO_TAG` and `IMAGE_TAG` are equal, run `docker compose config --images` again, and pull the required service. Do not edit files inside the container.
 
 ### Docker cannot download the image
 

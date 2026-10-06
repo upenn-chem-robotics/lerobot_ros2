@@ -4,6 +4,10 @@ site_url: https://upenn-chem-robotics.github.io/lerobot_ros2/
 repo_name: upenn-chem-robotics/lerobot_ros2
 repo_url: https://github.com/upenn-chem-robotics/lerobot_ros2
 
+plugins:
+  - search
+  - macros
+
 theme:
   name: material
   features:
@@ -15,6 +19,13 @@ theme:
     - search.highlight
     - search.suggest
     - toc.follow
+
+extra:
+  release_tag: !ENV [DOCS_VERSION, development]
+  version:
+    provider: mike
+    default: latest
+    alias: true
 
 nav:
   - Start here:
